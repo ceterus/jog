@@ -1,6 +1,6 @@
 use crate::comments::clean_comment;
 use crate::config::StatsMode;
-use crate::models::{Flow, KanbanStats, SprintStats, StandupData};
+use crate::models::{BitbucketActivity, Flow, KanbanStats, PullRequest, SprintStats, StandupData};
 
 pub fn render(data: &StandupData, stats: StatsMode) {
     println!("═══════════════════════════════════════════");
@@ -38,6 +38,10 @@ pub fn render(data: &StandupData, stats: StatsMode) {
             println!("  • [{}] {} ({})", t.key, t.summary, t.status);
         }
     }
+    if let Some(bb) = &data.bitbucket {
+        println!();
+        render_bitbucket(bb);
+    }
     if stats == StatsMode::Off {
         return;
     }
@@ -50,6 +54,59 @@ pub fn render(data: &StandupData, stats: StatsMode) {
             println!("  No active sprint found.");
         }
     }
+}
+
+fn render_bitbucket(bb: &BitbucketActivity) {
+    println!("Bitbucket:");
+    if !bb.opened.is_empty() {
+        println!("  Opened:");
+        for pr in &bb.opened {
+            print_pr(pr);
+        }
+    }
+    if !bb.completed.is_empty() {
+        println!("  {}:", completed_heading(&bb.completed));
+        for pr in &bb.completed {
+            print_pr(pr);
+        }
+    }
+    if !bb.awaiting_approval.is_empty() {
+        println!("  Awaiting approval:");
+        for pr in &bb.awaiting_approval {
+            print_pr(pr);
+        }
+    }
+}
+
+fn completed_heading(prs: &[PullRequest]) -> &'static str {
+    let any_merged = prs.iter().any(|p| p.state == "MERGED");
+    let any_declined = prs.iter().any(|p| p.state == "DECLINED");
+    match (any_merged, any_declined) {
+        (true, true) => "Merged / declined",
+        (true, false) => "Merged",
+        (false, true) => "Declined",
+        _ => "Completed",
+    }
+}
+
+fn print_pr(pr: &PullRequest) {
+    let approvals_note = if pr.state == "OPEN" {
+        if pr.approvals == 0 {
+            " (no approvals yet)".to_string()
+        } else {
+            format!(
+                " ({} approval{})",
+                pr.approvals,
+                if pr.approvals == 1 { "" } else { "s" }
+            )
+        }
+    } else {
+        String::new()
+    };
+    println!(
+        "    • !{} [{}] {}{}",
+        pr.id, pr.repo, pr.title, approvals_note
+    );
 }
 
 fn render_sprint(s: &SprintStats, stats: StatsMode) {

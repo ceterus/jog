@@ -97,8 +97,45 @@ jog --date 2026-04-10       # override the start date
 jog --format markdown       # text (default) | markdown | json
 jog --stats summary         # hide personal metrics, keep structural facts
 jog --no-stats              # hide the stats panel entirely
+jog --no-pr                 # skip the Bitbucket PR summary for this run
 jog --debug                 # print JQL, window, issue counts, config path
 ```
+
+### Bitbucket PR summary (optional)
+
+If you use Bitbucket Cloud for your team's code, `jog setup` will prompt for:
+
+- **Bitbucket workspace slug** — the `your-org` in `bitbucket.org/your-org/`.
+- **Bitbucket API token** — leave blank to reuse your main Atlassian token
+  (works if your main token has `read:account`, `read:pullrequest:bitbucket`,
+  and `read:repository:bitbucket` scopes). Otherwise, create a
+  Bitbucket-scoped token at
+  https://id.atlassian.com/manage-profile/security/api-tokens with those
+  scopes and paste it.
+- **Bitbucket project keys** (optional) — comma-separated list of BB project
+  keys (e.g. `CRM,INFRA`). Restricts the repo fan-out to those projects
+  only. Essential in large workspaces — without it, every run iterates
+  every repo you can see. Blank = scan all.
+
+> **Why might I need a separate token?** Bitbucket Cloud uses the same
+> Basic auth shape as Jira (`email:token`), but the token needs Bitbucket
+> scopes. If your main jog token was created unscoped it likely Just Works;
+> if it was scoped for Jira only, create a second token.
+
+Leave the workspace blank during setup to skip Bitbucket entirely. Pass
+`--no-pr` on a single run to suppress the section.
+
+The PR summary shows three sub-sections, each hidden if empty:
+
+- **Opened** — PRs you authored in the standup window.
+- **Merged / declined** — PRs you authored that reached a terminal state
+  in the window.
+- **Awaiting approval** — PRs you authored that existed before the window
+  (older) but were nudged during the window (comment, push, etc.) and
+  still have no approvals. Stale PRs with no activity in the window
+  won't surface here — a known limit of Bitbucket's BBQL (its
+  OR-within-AND filters silently match nothing, so a single-conjunction
+  date filter is used instead).
 
 ### Stats visibility
 
@@ -214,6 +251,21 @@ Blockers:
   in `config.toml`.
 - **Wrong story-point totals** — custom field IDs differ per Jira instance.
   Set `[fields].story_points` and `[fields].sprint` in `config.toml`.
+- **Bitbucket section missing** — either not configured (check `jog config`),
+  no PR activity in the window (correct, hides), or the API token lacks
+  Bitbucket scopes. Recreate at
+  https://id.atlassian.com/manage-profile/security/api-tokens with
+  `read:account`, `read:pullrequest:bitbucket`, `read:repository:bitbucket`.
+- **Bitbucket run is slow** — we iterate all repos in the workspace (one
+  HTTP call per repo) because Atlassian retired the workspace-wide PR
+  endpoint. Scales linearly with workspace repo count; capped at 100 repos
+  per run. Set Bitbucket project keys during `jog setup` to narrow the
+  fan-out.
+- **macOS Keychain prompts every run** — "Always Allow" is tied to the
+  binary's code signature, which changes on every `cargo build`. For a
+  personal dev machine: open **Keychain Access**, search `jog_`, and for
+  each entry set Access Control → "Allow all applications to access this
+  item". One-time setup, no more prompts.
 
 ## Platform
 

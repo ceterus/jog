@@ -97,12 +97,36 @@ impl Default for AiConfig {
 #[serde(default)]
 pub struct OutputConfig {
     pub format: String,
+    /// How much of the stats panel to render:
+    /// - "full" (default): points, velocity, throughput, cycle times
+    /// - "summary": just structural facts (sprint name, days left, N done / M total)
+    /// - "off": hide the stats panel entirely
+    pub stats: String,
 }
 
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             format: "text".to_string(),
+            stats: "full".to_string(),
+        }
+    }
+}
+
+/// Parsed stats-visibility level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsMode {
+    Full,
+    Summary,
+    Off,
+}
+
+impl StatsMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "off" | "none" | "hide" | "false" => Self::Off,
+            "summary" | "brief" | "terse" => Self::Summary,
+            _ => Self::Full,
         }
     }
 }
@@ -261,5 +285,35 @@ mod tests {
         assert!(cfg.statuses.done.iter().any(|s| s == "Done"));
         assert!(cfg.statuses.done.iter().any(|s| s == "Closed"));
         assert!(cfg.statuses.done.iter().any(|s| s == "Resolved"));
+    }
+
+    // ── StatsMode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn stats_mode_full_default() {
+        assert_eq!(AppConfig::default().output.stats, "full");
+        assert_eq!(StatsMode::from_str("full"), StatsMode::Full);
+        // Unknown strings fall back to Full — same safe default behaviour
+        // as FlowMode.
+        assert_eq!(StatsMode::from_str("bananas"), StatsMode::Full);
+        assert_eq!(StatsMode::from_str(""), StatsMode::Full);
+    }
+
+    #[test]
+    fn stats_mode_parses_off_aliases() {
+        for s in ["off", "none", "hide", "false", "OFF", " off "] {
+            assert_eq!(StatsMode::from_str(s), StatsMode::Off, "failed on {s:?}");
+        }
+    }
+
+    #[test]
+    fn stats_mode_parses_summary_aliases() {
+        for s in ["summary", "brief", "terse", "SUMMARY"] {
+            assert_eq!(
+                StatsMode::from_str(s),
+                StatsMode::Summary,
+                "failed on {s:?}"
+            );
+        }
     }
 }

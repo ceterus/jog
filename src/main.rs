@@ -35,6 +35,17 @@ struct Args {
     /// Print raw debug info
     #[arg(long, global = true)]
     debug: bool,
+
+    /// Hide the stats panel (points/velocity/throughput/cycle times).
+    /// Overrides `[output].stats` for this run. Use when sharing to Slack
+    /// or anywhere you'd rather not publish personal performance metrics.
+    #[arg(long, global = true)]
+    no_stats: bool,
+
+    /// Stats verbosity: full | summary | off. Overrides `[output].stats`
+    /// for this run.
+    #[arg(long, global = true)]
+    stats: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -275,7 +286,16 @@ async fn main() -> Result<()> {
 
     let fmt = args.format.as_deref().unwrap_or(&app_cfg.output.format);
 
-    output::render(&data, fmt);
+    // CLI precedence: --no-stats > --stats > [output].stats in config.
+    let stats_mode = if args.no_stats {
+        config::StatsMode::Off
+    } else if let Some(s) = args.stats.as_deref() {
+        config::StatsMode::from_str(s)
+    } else {
+        config::StatsMode::from_str(&app_cfg.output.stats)
+    };
+
+    output::render(&data, fmt, stats_mode);
     Ok(())
 }
 

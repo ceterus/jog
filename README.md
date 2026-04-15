@@ -82,6 +82,7 @@ provider = "none"                             # reserved
 
 [output]
 format = "text"                               # text | json | markdown
+stats  = "full"                               # "full" | "summary" | "off"
 ```
 
 Find your custom field IDs at
@@ -94,8 +95,27 @@ Find your custom field IDs at
 jog                         # previous work day + today so far
 jog --date 2026-04-10       # override the start date
 jog --format markdown       # text (default) | markdown | json
+jog --stats summary         # hide personal metrics, keep structural facts
+jog --no-stats              # hide the stats panel entirely
 jog --debug                 # print JQL, window, issue counts, config path
 ```
+
+### Stats visibility
+
+Some teams prefer not to surface personal performance metrics (velocity,
+throughput, cycle-time averages) in standup channels. Control what shows
+via `[output].stats` in config, or override per-run with `--stats` /
+`--no-stats`:
+
+- **`full`** (default) — everything: points, velocity, needed pace,
+  throughput, cycle-time averages.
+- **`summary`** — structural facts only: sprint name, days remaining,
+  issue counts. No points, no velocity, no cycle times.
+- **`off`** — stats panel hidden. Only the activity log and "Today"
+  panel render.
+
+The activity log ("Since yesterday") and "Today" panel are never
+affected — those are factual history, not performance metrics.
 
 ## What it pulls
 

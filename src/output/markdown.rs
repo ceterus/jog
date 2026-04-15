@@ -1,8 +1,9 @@
 use crate::comments::clean_comment;
+use crate::config::StatsMode;
 use crate::models::{Flow, KanbanStats, SprintStats, StandupData};
 use crate::output::text::fmt_duration;
 
-pub fn render(data: &StandupData) {
+pub fn render(data: &StandupData, stats: StatsMode) {
     println!("# Standup — {} ({})", data.user_name, data.end_datetime);
     println!();
     println!("## {} ({} → now)", data.since_label, data.start_date);
@@ -36,10 +37,13 @@ pub fn render(data: &StandupData) {
             println!("- **[{}]** {} _({})]_", t.key, t.summary, t.status);
         }
     }
+    if stats == StatsMode::Off {
+        return;
+    }
     println!();
     match &data.flow {
-        Some(Flow::Sprint(s)) => render_sprint(s),
-        Some(Flow::Kanban(k)) => render_kanban(k),
+        Some(Flow::Sprint(s)) => render_sprint(s, stats),
+        Some(Flow::Kanban(k)) => render_kanban(k, stats),
         None => {
             println!("## Sprint");
             println!("_No active sprint found._");
@@ -47,7 +51,7 @@ pub fn render(data: &StandupData) {
     }
 }
 
-fn render_sprint(s: &SprintStats) {
+fn render_sprint(s: &SprintStats, stats: StatsMode) {
     println!("## Sprint");
     if s.state == "closed" {
         let ended = (-s.days_remaining).max(0);
@@ -63,6 +67,13 @@ fn render_sprint(s: &SprintStats) {
             s.name, s.days_remaining, day_word, s.total_days
         );
     }
+    println!();
+    println!("Issues: {}/{} done", s.issues_done, s.issues_total);
+
+    if stats == StatsMode::Summary {
+        return;
+    }
+
     println!();
     let pct = if s.points_total > 0.0 {
         s.points_done / s.points_total * 100.0
@@ -98,10 +109,15 @@ fn render_sprint(s: &SprintStats) {
     print_row("QA", s.avg_qa_hours);
 }
 
-fn render_kanban(k: &KanbanStats) {
+fn render_kanban(k: &KanbanStats, stats: StatsMode) {
     println!("## Flow (Kanban, last {} days)", k.window_days);
     println!();
     println!("**WIP:** {} open", k.wip_total);
+    if stats == StatsMode::Summary {
+        println!();
+        println!("**Throughput:** {} issues done", k.throughput);
+        return;
+    }
     if !k.wip_by_status.is_empty() {
         println!();
         println!("| Status | Count |");

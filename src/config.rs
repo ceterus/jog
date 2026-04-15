@@ -17,12 +17,26 @@ pub struct AppConfig {
     pub output: OutputConfig,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct JiraConfig {
     pub base_url: String,
     pub projects: Vec<String>,
     pub board_id: Option<u64>,
+    /// Flow mode: "auto" (detect), "scrum" (force sprint queries),
+    /// "kanban" (skip sprint queries entirely).
+    pub mode: String,
+}
+
+impl Default for JiraConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            projects: vec![],
+            board_id: None,
+            mode: "auto".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

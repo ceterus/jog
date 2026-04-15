@@ -6,7 +6,33 @@ use std::collections::BTreeMap;
 
 use crate::client::post_json;
 use crate::config::{project_jql_clause, AppConfig, Credentials};
-use crate::models::SprintStats;
+use crate::models::{Flow, KanbanStats, SprintStats};
+
+/// Resolved flow mode for this run. Determined from config + availability of
+/// open/closed sprints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowMode {
+    Scrum,
+    Kanban,
+}
+
+/// Which mode the user has configured. "auto" means detect at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfiguredMode {
+    Auto,
+    Scrum,
+    Kanban,
+}
+
+impl ConfiguredMode {
+    pub fn from_cfg(cfg: &AppConfig) -> Self {
+        match cfg.jira.mode.trim().to_lowercase().as_str() {
+            "scrum" => Self::Scrum,
+            "kanban" => Self::Kanban,
+            _ => Self::Auto,
+        }
+    }
+}
 
 fn parse_datetime(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.3f%z")
@@ -99,7 +125,45 @@ fn pick_sprint(issues: &[Value], sprint_field: &str, state: &str) -> Option<Valu
     best.map(|(v, _)| v)
 }
 
-pub async fn fetch_sprint_stats(
+/// Resolve the flow model for this run and compute stats.
+///
+/// Returns `(mode, flow)` where `mode` is the actual mode used (important for
+/// callers that need to adjust other JQL — the "Today" panel in particular)
+/// and `flow` is the optional stats payload. `flow` can be `None` if we're
+/// in scrum mode but the user has no open or recently-closed sprint content.
+pub async fn fetch_flow_stats(
+    client: &Client,
+    creds: &Credentials,
+    cfg: &AppConfig,
+    debug: bool,
+) -> Result<(FlowMode, Option<Flow>)> {
+    match ConfiguredMode::from_cfg(cfg) {
+        ConfiguredMode::Scrum => {
+            let s = fetch_sprint_stats(client, creds, cfg, debug).await?;
+            Ok((FlowMode::Scrum, s.map(Flow::Sprint)))
+        }
+        ConfiguredMode::Kanban => {
+            let k = fetch_kanban_stats(client, creds, cfg, debug).await?;
+            Ok((FlowMode::Kanban, Some(Flow::Kanban(k))))
+        }
+        ConfiguredMode::Auto => {
+            // Auto: try sprint first. If the sprint path finds nothing
+            // (neither open nor recently-closed), treat as kanban.
+            match fetch_sprint_stats(client, creds, cfg, debug).await? {
+                Some(s) => Ok((FlowMode::Scrum, Some(Flow::Sprint(s)))),
+                None => {
+                    if debug {
+                        eprintln!("[debug] no sprints detected; falling back to kanban mode");
+                    }
+                    let k = fetch_kanban_stats(client, creds, cfg, debug).await?;
+                    Ok((FlowMode::Kanban, Some(Flow::Kanban(k))))
+                }
+            }
+        }
+    }
+}
+
+async fn fetch_sprint_stats(
     client: &Client,
     creds: &Credentials,
     cfg: &AppConfig,
@@ -321,10 +385,215 @@ pub async fn fetch_sprint_stats(
     }))
 }
 
+/// Rolling window, in days, used for Kanban throughput and cycle-time averages.
+const KANBAN_WINDOW_DAYS: i64 = 14;
+
+async fn fetch_kanban_stats(
+    client: &Client,
+    creds: &Credentials,
+    cfg: &AppConfig,
+    debug: bool,
+) -> Result<KanbanStats> {
+    let proj = project_jql_clause(&cfg.jira.projects);
+    let proj_and = if proj.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", proj)
+    };
+    let done = crate::config::done_statuses_jql(&cfg.statuses.done);
+
+    // WIP: everything assigned-to-me not in a done state.
+    let wip_jql = format!(
+        "assignee = currentUser() AND status NOT IN ({done}){proj_and}",
+        done = done,
+        proj_and = proj_and,
+    );
+    if debug {
+        eprintln!("[debug] kanban JQL (wip): {}", wip_jql);
+    }
+    let wip_body = serde_json::json!({
+        "jql": wip_jql,
+        "fields": ["status"],
+        "maxResults": 200,
+    });
+    let wip_v = post_json(client, creds, "/rest/api/3/search/jql", &wip_body).await?;
+    let wip_issues = wip_v
+        .get("issues")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut wip_by_status: BTreeMap<String, usize> = BTreeMap::new();
+    for issue in &wip_issues {
+        let status = issue
+            .get("fields")
+            .and_then(|f| f.get("status"))
+            .and_then(|s| s.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        *wip_by_status.entry(status).or_insert(0) += 1;
+    }
+    let wip_total = wip_issues.len();
+
+    // Throughput + cycle times: everything the user resolved in the window.
+    let throughput_jql = format!(
+        "assignee = currentUser() AND resolved >= -{window}d{proj_and}",
+        window = KANBAN_WINDOW_DAYS,
+        proj_and = proj_and,
+    );
+    if debug {
+        eprintln!("[debug] kanban JQL (throughput): {}", throughput_jql);
+    }
+    let thr_body = serde_json::json!({
+        "jql": throughput_jql,
+        "fields": ["status", "created", "resolutiondate"],
+        "expand": "changelog",
+        "maxResults": 100,
+    });
+    let thr_v = post_json(client, creds, "/rest/api/3/search/jql", &thr_body).await?;
+    let thr_issues = thr_v
+        .get("issues")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let throughput = thr_issues.len();
+
+    let mut resolve_hours: Vec<f64> = Vec::new();
+    let mut in_progress_hours: Vec<f64> = Vec::new();
+    let mut in_review_hours: Vec<f64> = Vec::new();
+    let mut qa_hours: Vec<f64> = Vec::new();
+    let mut todo_to_done_hours: Vec<f64> = Vec::new();
+
+    for issue in &thr_issues {
+        let fields = issue.get("fields").cloned().unwrap_or(Value::Null);
+        if let (Some(created), Some(resolved)) = (
+            fields
+                .get("created")
+                .and_then(|x| x.as_str())
+                .and_then(parse_datetime),
+            fields
+                .get("resolutiondate")
+                .and_then(|x| x.as_str())
+                .and_then(parse_datetime),
+        ) {
+            let h = (resolved - created).num_minutes() as f64 / 60.0;
+            if h > 0.0 {
+                resolve_hours.push(h);
+            }
+        }
+        if let Some(changelog) = issue.get("changelog") {
+            let durations = calc_status_durations(changelog);
+            for s in &cfg.statuses.in_progress {
+                if let Some(&h) = durations.get(s.as_str()) {
+                    in_progress_hours.push(h);
+                }
+            }
+            for s in &cfg.statuses.in_review {
+                if let Some(&h) = durations.get(s.as_str()) {
+                    in_review_hours.push(h);
+                }
+            }
+            for s in &cfg.statuses.qa {
+                if let Some(&h) = durations.get(s.as_str()) {
+                    qa_hours.push(h);
+                }
+            }
+            let total: f64 = durations.values().sum();
+            if total > 0.0 {
+                todo_to_done_hours.push(total);
+            }
+        }
+    }
+
+    let avg = |v: &[f64]| -> Option<f64> {
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.iter().sum::<f64>() / v.len() as f64)
+        }
+    };
+
+    Ok(KanbanStats {
+        window_days: KANBAN_WINDOW_DAYS,
+        wip_by_status,
+        wip_total,
+        throughput,
+        throughput_per_day: if KANBAN_WINDOW_DAYS > 0 {
+            Some(throughput as f64 / KANBAN_WINDOW_DAYS as f64)
+        } else {
+            None
+        },
+        avg_resolve_hours: avg(&resolve_hours),
+        avg_in_progress_hours: avg(&in_progress_hours),
+        avg_in_review_hours: avg(&in_review_hours),
+        avg_qa_hours: avg(&qa_hours),
+        avg_todo_to_done_hours: avg(&todo_to_done_hours),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── ConfiguredMode::from_cfg ──────────────────────────────────────────
+
+    fn cfg_with_mode(mode: &str) -> AppConfig {
+        let mut c = AppConfig::default();
+        c.jira.mode = mode.to_string();
+        c
+    }
+
+    #[test]
+    fn configured_mode_defaults_to_auto() {
+        let c = AppConfig::default();
+        assert_eq!(c.jira.mode, "auto");
+        assert_eq!(ConfiguredMode::from_cfg(&c), ConfiguredMode::Auto);
+    }
+
+    #[test]
+    fn configured_mode_parses_values() {
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("scrum")),
+            ConfiguredMode::Scrum
+        );
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("kanban")),
+            ConfiguredMode::Kanban
+        );
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("auto")),
+            ConfiguredMode::Auto
+        );
+    }
+
+    #[test]
+    fn configured_mode_is_case_insensitive_and_trims() {
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("  SCRUM ")),
+            ConfiguredMode::Scrum
+        );
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("Kanban")),
+            ConfiguredMode::Kanban
+        );
+    }
+
+    #[test]
+    fn configured_mode_unknown_falls_back_to_auto() {
+        // Anything we don't recognise defers to auto-detection, the safest
+        // default for users who typo'd the config.
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("bananas")),
+            ConfiguredMode::Auto
+        );
+        assert_eq!(
+            ConfiguredMode::from_cfg(&cfg_with_mode("")),
+            ConfiguredMode::Auto
+        );
+    }
 
     // ── parse_datetime ────────────────────────────────────────────────────
 

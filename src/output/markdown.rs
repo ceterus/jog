@@ -1,6 +1,6 @@
 use crate::comments::clean_comment;
 use crate::config::StatsMode;
-use crate::models::{Flow, KanbanStats, SprintStats, StandupData};
+use crate::models::{BitbucketActivity, Flow, KanbanStats, PullRequest, SprintStats, StandupData};
 use crate::output::text::fmt_duration;
 
 pub fn render(data: &StandupData, stats: StatsMode) {
@@ -37,6 +37,10 @@ pub fn render(data: &StandupData, stats: StatsMode) {
             println!("- **[{}]** {} _({})]_", t.key, t.summary, t.status);
         }
     }
+    if let Some(bb) = &data.bitbucket {
+        println!();
+        render_bitbucket(bb);
+    }
     if stats == StatsMode::Off {
         return;
     }
@@ -48,6 +52,66 @@ pub fn render(data: &StandupData, stats: StatsMode) {
             println!("## Sprint");
             println!("_No active sprint found._");
         }
+    }
+}
+
+fn render_bitbucket(bb: &BitbucketActivity) {
+    println!("## Bitbucket");
+    if !bb.opened.is_empty() {
+        println!();
+        println!("**Opened:**");
+        for pr in &bb.opened {
+            print_pr(pr);
+        }
+    }
+    if !bb.completed.is_empty() {
+        println!();
+        let any_merged = bb.completed.iter().any(|p| p.state == "MERGED");
+        let any_declined = bb.completed.iter().any(|p| p.state == "DECLINED");
+        let heading = match (any_merged, any_declined) {
+            (true, true) => "**Merged / declined:**",
+            (true, false) => "**Merged:**",
+            (false, true) => "**Declined:**",
+            _ => "**Completed:**",
+        };
+        println!("{}", heading);
+        for pr in &bb.completed {
+            print_pr(pr);
+        }
+    }
+    if !bb.awaiting_approval.is_empty() {
+        println!();
+        println!("**Awaiting approval:**");
+        for pr in &bb.awaiting_approval {
+            print_pr(pr);
+        }
+    }
+}
+
+fn print_pr(pr: &PullRequest) {
+    let approvals_note = if pr.state == "OPEN" {
+        if pr.approvals == 0 {
+            " _(no approvals yet)_".to_string()
+        } else {
+            format!(
+                " _({} approval{})_",
+                pr.approvals,
+                if pr.approvals == 1 { "" } else { "s" }
+            )
+        }
+    } else {
+        String::new()
+    };
+    if pr.url.is_empty() {
+        println!(
+            "- !{} **[{}]** {}{}",
+            pr.id, pr.repo, pr.title, approvals_note
+        );
+    } else {
+        println!(
+            "- [!{}]({}) **[{}]** {}{}",
+            pr.id, pr.url, pr.repo, pr.title, approvals_note
+        );
     }
 }
 

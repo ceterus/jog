@@ -78,6 +78,42 @@ pub struct TodayIssue {
     pub status: String,
 }
 
+/// A single Bitbucket pull request, normalised into what we need for
+/// standup output.
+#[derive(Serialize, Clone, Debug)]
+pub struct PullRequest {
+    pub id: u64,
+    pub title: String,
+    /// "workspace/repo-slug"
+    pub repo: String,
+    /// "OPEN" | "MERGED" | "DECLINED" | "SUPERSEDED"
+    pub state: String,
+    pub url: String,
+    pub created_on: String,
+    pub updated_on: String,
+    pub approvals: u64,
+}
+
+/// Bitbucket-shaped standup section. All three lists are pre-classified
+/// so output rendering can stay dumb.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct BitbucketActivity {
+    /// PRs authored by me and created within the standup window.
+    pub opened: Vec<PullRequest>,
+    /// PRs authored by me that reached a terminal state (merged/declined)
+    /// within the standup window.
+    pub completed: Vec<PullRequest>,
+    /// Older open PRs authored by me that still need approval (created
+    /// before the window started, no approvals yet).
+    pub awaiting_approval: Vec<PullRequest>,
+}
+
+impl BitbucketActivity {
+    pub fn is_empty(&self) -> bool {
+        self.opened.is_empty() && self.completed.is_empty() && self.awaiting_approval.is_empty()
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct StandupData {
     pub user_name: String,
@@ -90,6 +126,7 @@ pub struct StandupData {
     pub activities: BTreeMap<String, Activity>,
     pub today: Vec<TodayIssue>,
     pub flow: Option<Flow>,
+    pub bitbucket: Option<BitbucketActivity>,
 }
 
 pub fn derive_me_from_issues(issues: &[Value]) -> Option<Myself> {

@@ -1,4 +1,5 @@
 mod auth;
+mod bitbucket;
 mod client;
 mod comments;
 mod config;
@@ -46,6 +47,10 @@ struct Args {
     /// for this run.
     #[arg(long, global = true)]
     stats: Option<String>,
+
+    /// Skip the Bitbucket PR summary for this run, even if configured.
+    #[arg(long, global = true)]
+    no_pr: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -265,6 +270,47 @@ async fn main() -> Result<()> {
         .await
         .unwrap_or_default();
 
+    // Bitbucket PR summary (optional). Gated on a configured workspace and
+    // --no-pr being absent. Token defaults to the main Atlassian token,
+    // overridable per-user for folks whose main token lacks Bitbucket scopes.
+    let bitbucket = if args.no_pr {
+        None
+    } else {
+        match auth::keychain_get(auth::KEYCHAIN_SERVICE_BITBUCKET_WORKSPACE) {
+            Some(ws) if !ws.is_empty() => {
+                let bb_token = auth::keychain_get(auth::KEYCHAIN_SERVICE_BITBUCKET_TOKEN)
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| creds.token.clone());
+                let projects: Vec<String> =
+                    auth::keychain_get(auth::KEYCHAIN_SERVICE_BITBUCKET_PROJECTS)
+                        .map(|s| {
+                            s.split(',')
+                                .map(|x| x.trim().to_string())
+                                .filter(|x| !x.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                let bb_creds = bitbucket::BitbucketCredentials {
+                    workspace: ws,
+                    email: creds.email.clone(),
+                    token: bb_token,
+                    projects,
+                };
+                match bitbucket::fetch_activity(&http, &bb_creds, start_dt, args.debug).await {
+                    Ok(a) if !a.is_empty() => Some(a),
+                    Ok(_) => None, // configured but nothing to show — suppress empty section
+                    Err(e) => {
+                        if args.debug {
+                            eprintln!("[debug] bitbucket fetch failed: {e:#}");
+                        }
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    };
+
     // Label: "Since Friday" when prev workday != yesterday,
     // "Since yesterday" when it is.
     let today = Local::now().date_naive();
@@ -282,6 +328,7 @@ async fn main() -> Result<()> {
         activities,
         today: today_issues,
         flow: flow_stats,
+        bitbucket,
     };
 
     let fmt = args.format.as_deref().unwrap_or(&app_cfg.output.format);

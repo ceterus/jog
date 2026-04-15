@@ -1,7 +1,8 @@
 use crate::comments::clean_comment;
+use crate::config::StatsMode;
 use crate::models::{Flow, KanbanStats, SprintStats, StandupData};
 
-pub fn render(data: &StandupData) {
+pub fn render(data: &StandupData, stats: StatsMode) {
     println!("═══════════════════════════════════════════");
     println!(" Standup — {} ({})", data.user_name, data.end_datetime);
     println!("═══════════════════════════════════════════");
@@ -37,10 +38,13 @@ pub fn render(data: &StandupData) {
             println!("  • [{}] {} ({})", t.key, t.summary, t.status);
         }
     }
+    if stats == StatsMode::Off {
+        return;
+    }
     println!();
     match &data.flow {
-        Some(Flow::Sprint(s)) => render_sprint(s),
-        Some(Flow::Kanban(k)) => render_kanban(k),
+        Some(Flow::Sprint(s)) => render_sprint(s, stats),
+        Some(Flow::Kanban(k)) => render_kanban(k, stats),
         None => {
             println!("Sprint:");
             println!("  No active sprint found.");
@@ -48,7 +52,7 @@ pub fn render(data: &StandupData) {
     }
 }
 
-fn render_sprint(s: &SprintStats) {
+fn render_sprint(s: &SprintStats, stats: StatsMode) {
     println!("Sprint:");
     if s.state == "closed" {
         let ended = (-s.days_remaining).max(0);
@@ -64,6 +68,14 @@ fn render_sprint(s: &SprintStats) {
             s.name, s.days_remaining, day_word, s.total_days
         );
     }
+    println!("  Issues: {}/{} done", s.issues_done, s.issues_total);
+
+    // Summary mode stops here: sprint name + issue count are structural
+    // facts, not personal performance metrics.
+    if stats == StatsMode::Summary {
+        return;
+    }
+
     println!(
         "  Points: {}/{} done ({:.0}%)",
         s.points_done,
@@ -74,7 +86,6 @@ fn render_sprint(s: &SprintStats) {
             0.0
         }
     );
-    println!("  Issues: {}/{} done", s.issues_done, s.issues_total);
     println!();
 
     if let Some(ppd) = s.points_per_day {
@@ -98,9 +109,16 @@ fn render_sprint(s: &SprintStats) {
     print_cycle("QA", s.avg_qa_hours);
 }
 
-fn render_kanban(k: &KanbanStats) {
+fn render_kanban(k: &KanbanStats, stats: StatsMode) {
     println!("Flow (Kanban, last {} days):", k.window_days);
     println!("  WIP: {} open", k.wip_total);
+    if stats == StatsMode::Summary {
+        // Summary: structural state only — how many open, how many closed
+        // in the window. No per-status breakdown, no throughput, no cycle
+        // times.
+        println!("  Throughput: {} issues done", k.throughput);
+        return;
+    }
     if !k.wip_by_status.is_empty() {
         for (status, n) in &k.wip_by_status {
             println!("    {:20} {}", status, n);

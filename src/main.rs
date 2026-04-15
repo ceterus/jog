@@ -2,10 +2,10 @@ mod auth;
 mod client;
 mod comments;
 mod config;
+mod flow;
 mod jql;
 mod models;
 mod output;
-mod sprint;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Weekday};
@@ -237,18 +237,22 @@ async fn main() -> Result<()> {
         }
     }
 
-    let today_issues = jql::search_in_progress(&http, &creds, &app_cfg)
+    // Resolve flow mode first — it decides how "Today" is queried and which
+    // stats panel we render.
+    let (flow_mode, flow_stats) =
+        match flow::fetch_flow_stats(&http, &creds, &app_cfg, args.debug).await {
+            Ok(x) => x,
+            Err(e) => {
+                if args.debug {
+                    eprintln!("[debug] flow stats failed: {e:#}");
+                }
+                (flow::FlowMode::Scrum, None)
+            }
+        };
+
+    let today_issues = jql::search_in_progress(&http, &creds, &app_cfg, flow_mode)
         .await
         .unwrap_or_default();
-    let sprint_stats = match sprint::fetch_sprint_stats(&http, &creds, &app_cfg, args.debug).await {
-        Ok(s) => s,
-        Err(e) => {
-            if args.debug {
-                eprintln!("[debug] sprint stats failed: {e:#}");
-            }
-            None
-        }
-    };
 
     // Label: "Since Friday" when prev workday != yesterday,
     // "Since yesterday" when it is.
@@ -266,7 +270,7 @@ async fn main() -> Result<()> {
         since_label,
         activities,
         today: today_issues,
-        sprint: sprint_stats,
+        flow: flow_stats,
     };
 
     let fmt = args.format.as_deref().unwrap_or(&app_cfg.output.format);

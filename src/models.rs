@@ -44,6 +44,34 @@ pub struct SprintStats {
 }
 
 #[derive(Serialize, Clone, Debug)]
+pub struct KanbanStats {
+    /// Window used for throughput + cycle-time calculations, e.g. 14.
+    pub window_days: i64,
+    /// Open work assigned to the user, bucketed by status name.
+    pub wip_by_status: BTreeMap<String, usize>,
+    /// Total open assigned-to-user work (sum of `wip_by_status`).
+    pub wip_total: usize,
+    /// Issues completed by the user in the last `window_days`.
+    pub throughput: usize,
+    /// Average throughput per day across the window.
+    pub throughput_per_day: Option<f64>,
+    pub avg_resolve_hours: Option<f64>,
+    pub avg_in_progress_hours: Option<f64>,
+    pub avg_in_review_hours: Option<f64>,
+    pub avg_qa_hours: Option<f64>,
+    pub avg_todo_to_done_hours: Option<f64>,
+}
+
+/// Which flow model applies to this user's work — sprint/scrum or kanban.
+/// Serialized with a `type` tag so JSON consumers can branch.
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Flow {
+    Sprint(SprintStats),
+    Kanban(KanbanStats),
+}
+
+#[derive(Serialize, Clone, Debug)]
 pub struct TodayIssue {
     pub key: String,
     pub summary: String,
@@ -61,7 +89,7 @@ pub struct StandupData {
     pub since_label: String,
     pub activities: BTreeMap<String, Activity>,
     pub today: Vec<TodayIssue>,
-    pub sprint: Option<SprintStats>,
+    pub flow: Option<Flow>,
 }
 
 pub fn derive_me_from_issues(issues: &[Value]) -> Option<Myself> {

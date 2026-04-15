@@ -1,5 +1,5 @@
 use crate::comments::clean_comment;
-use crate::models::StandupData;
+use crate::models::{Flow, KanbanStats, SprintStats, StandupData};
 
 pub fn render(data: &StandupData) {
     println!("═══════════════════════════════════════════");
@@ -38,58 +38,87 @@ pub fn render(data: &StandupData) {
         }
     }
     println!();
-    println!("Sprint:");
-    match &data.sprint {
-        Some(s) => {
-            if s.state == "closed" {
-                let ended = (-s.days_remaining).max(0);
-                let day_word = if ended == 1 { "day" } else { "days" };
-                println!(
-                    "  {} (closed — ended {} {} ago, was {} days long)",
-                    s.name, ended, day_word, s.total_days
-                );
-            } else {
-                let day_word = if s.days_remaining == 1 { "day" } else { "days" };
-                println!(
-                    "  {} ({} {} left of {})",
-                    s.name, s.days_remaining, day_word, s.total_days
-                );
-            }
-            println!(
-                "  Points: {}/{} done ({:.0}%)",
-                s.points_done,
-                s.points_total,
-                if s.points_total > 0.0 {
-                    s.points_done / s.points_total * 100.0
-                } else {
-                    0.0
-                }
-            );
-            println!("  Issues: {}/{} done", s.issues_done, s.issues_total);
-            println!();
-
-            if let Some(ppd) = s.points_per_day {
-                println!("  Velocity:");
-                println!("    Current:  {:.1} pts/day", ppd);
-                let points_remaining = s.points_total - s.points_done;
-                if s.days_remaining > 0 && points_remaining > 0.0 {
-                    println!(
-                        "    Needed:   {:.1} pts/day to finish on time",
-                        points_remaining / s.days_remaining as f64
-                    );
-                }
-            }
-            println!();
-
-            println!("  Avg Cycle Times (completed tickets):");
-            print_cycle("Created → Done", s.avg_resolve_hours);
-            print_cycle("To Do → Done", s.avg_todo_to_done_hours);
-            print_cycle("In Progress", s.avg_in_progress_hours);
-            print_cycle("In Review", s.avg_in_review_hours);
-            print_cycle("QA", s.avg_qa_hours);
+    match &data.flow {
+        Some(Flow::Sprint(s)) => render_sprint(s),
+        Some(Flow::Kanban(k)) => render_kanban(k),
+        None => {
+            println!("Sprint:");
+            println!("  No active sprint found.");
         }
-        None => println!("  No active sprint found."),
     }
+}
+
+fn render_sprint(s: &SprintStats) {
+    println!("Sprint:");
+    if s.state == "closed" {
+        let ended = (-s.days_remaining).max(0);
+        let day_word = if ended == 1 { "day" } else { "days" };
+        println!(
+            "  {} (closed — ended {} {} ago, was {} days long)",
+            s.name, ended, day_word, s.total_days
+        );
+    } else {
+        let day_word = if s.days_remaining == 1 { "day" } else { "days" };
+        println!(
+            "  {} ({} {} left of {})",
+            s.name, s.days_remaining, day_word, s.total_days
+        );
+    }
+    println!(
+        "  Points: {}/{} done ({:.0}%)",
+        s.points_done,
+        s.points_total,
+        if s.points_total > 0.0 {
+            s.points_done / s.points_total * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!("  Issues: {}/{} done", s.issues_done, s.issues_total);
+    println!();
+
+    if let Some(ppd) = s.points_per_day {
+        println!("  Velocity:");
+        println!("    Current:  {:.1} pts/day", ppd);
+        let points_remaining = s.points_total - s.points_done;
+        if s.days_remaining > 0 && points_remaining > 0.0 {
+            println!(
+                "    Needed:   {:.1} pts/day to finish on time",
+                points_remaining / s.days_remaining as f64
+            );
+        }
+    }
+    println!();
+
+    println!("  Avg Cycle Times (completed tickets):");
+    print_cycle("Created → Done", s.avg_resolve_hours);
+    print_cycle("To Do → Done", s.avg_todo_to_done_hours);
+    print_cycle("In Progress", s.avg_in_progress_hours);
+    print_cycle("In Review", s.avg_in_review_hours);
+    print_cycle("QA", s.avg_qa_hours);
+}
+
+fn render_kanban(k: &KanbanStats) {
+    println!("Flow (Kanban, last {} days):", k.window_days);
+    println!("  WIP: {} open", k.wip_total);
+    if !k.wip_by_status.is_empty() {
+        for (status, n) in &k.wip_by_status {
+            println!("    {:20} {}", status, n);
+        }
+    }
+    println!();
+    println!("  Throughput: {} issues done", k.throughput);
+    if let Some(tpd) = k.throughput_per_day {
+        println!("    {:.2} issues/day", tpd);
+    }
+    println!();
+
+    println!("  Avg Cycle Times (completed tickets):");
+    print_cycle("Created → Done", k.avg_resolve_hours);
+    print_cycle("To Do → Done", k.avg_todo_to_done_hours);
+    print_cycle("In Progress", k.avg_in_progress_hours);
+    print_cycle("In Review", k.avg_in_review_hours);
+    print_cycle("QA", k.avg_qa_hours);
 }
 
 fn print_cycle(label: &str, hours: Option<f64>) {

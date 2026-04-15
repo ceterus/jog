@@ -65,6 +65,7 @@ are used when fields are missing.
 base_url = "https://your-org.atlassian.net"   # used only if Keychain + env are empty
 projects = ["PROJ", "INFRA"]                  # scope queries to these projects
 board_id = 123                                # reserved for future use
+mode     = "auto"                             # "auto" | "scrum" | "kanban"
 
 [fields]
 story_points = "customfield_10047"            # your instance's Story Points field id
@@ -110,6 +111,18 @@ Activity window = `[start_date 00:00 local, now]`.
 - **Sprint stats** — points/issues done, velocity (pts/day), required pace to
   finish on time, average cycle times (Created → Done, To Do → Done,
   In Progress, In Review, QA).
+
+### Scrum vs Kanban
+
+`[jira].mode` controls how the tool interprets your work:
+
+- **`auto`** (default) — try the active sprint first, fall back to the most
+  recently closed sprint (within 2 days), otherwise render a Kanban panel.
+  Right for most users.
+- **`scrum`** — always use sprint queries. Kanban users on `scrum` will see
+  `No active sprint found.`
+- **`kanban`** — skip sprint queries entirely. Renders WIP by status,
+  throughput (issues/day over the last 14 days), and cycle-time averages.
 
 ### Sprint-boundary behavior
 

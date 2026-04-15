@@ -81,6 +81,7 @@ pub async fn search_in_progress(
     client: &Client,
     creds: &Credentials,
     cfg: &AppConfig,
+    flow_mode: crate::flow::FlowMode,
 ) -> Result<Vec<TodayIssue>> {
     let proj = project_jql_clause(&cfg.jira.projects);
     let proj_clause = if proj.is_empty() {
@@ -90,12 +91,24 @@ pub async fn search_in_progress(
     };
     let done = done_statuses_jql(&cfg.statuses.done);
 
-    let jql = format!(
-        "assignee = currentUser() AND sprint in openSprints() AND {proj_clause}\
-         status NOT IN ({done}) ORDER BY status ASC, updated DESC",
-        proj_clause = proj_clause,
-        done = done,
-    );
+    // Scrum: scope "Today" to the active sprint (current focus).
+    // Kanban: no sprint to scope by — show all open assigned work, capped by
+    // recent activity so stale backlog doesn't flood the panel.
+    let jql = match flow_mode {
+        crate::flow::FlowMode::Scrum => format!(
+            "assignee = currentUser() AND sprint in openSprints() AND {proj_clause}\
+             status NOT IN ({done}) ORDER BY status ASC, updated DESC",
+            proj_clause = proj_clause,
+            done = done,
+        ),
+        crate::flow::FlowMode::Kanban => format!(
+            "assignee = currentUser() AND {proj_clause}\
+             status NOT IN ({done}) AND updated >= -30d \
+             ORDER BY status ASC, updated DESC",
+            proj_clause = proj_clause,
+            done = done,
+        ),
+    };
     let body = serde_json::json!({
         "jql": jql,
         "fields": ["summary", "status"],

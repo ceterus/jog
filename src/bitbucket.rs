@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
+use futures::stream::{self, StreamExt};
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::models::{BitbucketActivity, PullRequest};
 
@@ -33,6 +36,9 @@ const MAX_PAGES: u32 = 10; // cap at 500 PRs (50 per page) — plenty for a stan
 /// standup. If a user genuinely contributes to more repos than this, we
 /// silently truncate with a debug note.
 const MAX_REPOS: usize = 100;
+/// Max in-flight concurrent per-repo PR requests. Balances "go fast" with
+/// "don't hammer Bitbucket into rate-limiting the user".
+const CONCURRENCY: usize = 10;
 
 /// Fetch the current user's Bitbucket UUID via /user. Bitbucket uses UUIDs,
 /// not the Jira accountId, so we can't reuse our Jira identity.
@@ -84,10 +90,39 @@ pub async fn fetch_activity(
         );
     }
 
+    // Inline progress: show a single-line spinner+counter that streams as
+    // each repo's PR query completes. Hidden under `--debug` (debug println!s
+    // would interleave and corrupt the carriage-return redraws) and hidden
+    // when stderr isn't a TTY (piped / JSON consumers / CI).
+    let pb = progress_bar(repos.len() as u64, debug);
+
+    // Bounded-concurrency fan-out: cap in-flight requests at CONCURRENCY
+    // so we don't open 100 sockets at once and trip Bitbucket rate limits.
+    let results: Vec<(String, Result<Vec<PullRequest>>)> = stream::iter(repos.iter().cloned())
+        .map(|repo_slug| {
+            let uuid = uuid.clone();
+            // ProgressBar is internally Arc-backed; cloning is cheap.
+            let pb = pb.clone();
+            async move {
+                let r = fetch_repo_prs(client, creds, &repo_slug, &uuid, start, debug).await;
+                if let Some(pb) = pb {
+                    pb.inc(1);
+                }
+                (repo_slug, r)
+            }
+        })
+        .buffer_unordered(CONCURRENCY)
+        .collect()
+        .await;
+
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
+    }
+
     let mut all: Vec<PullRequest> = Vec::new();
     let mut repos_with_hits = 0;
-    for repo_slug in &repos {
-        match fetch_repo_prs(client, creds, repo_slug, &uuid, start, debug).await {
+    for (repo_slug, res) in results {
+        match res {
             Ok(mut prs) => {
                 if !prs.is_empty() {
                     if debug {
@@ -115,6 +150,33 @@ pub async fn fetch_activity(
     }
 
     Ok(classify(&all, start))
+}
+
+/// Build a stderr progress bar for the BB repo fan-out, or `None` when
+/// we shouldn't render one (debug mode corrupts output; non-TTY is a
+/// hint we're piped into a file/another process).
+fn progress_bar(total: u64, debug: bool) -> Option<ProgressBar> {
+    if debug {
+        return None;
+    }
+    // Respect piping: indicatif auto-detects TTY, but we also want the
+    // bar on stderr specifically so `jog --format json > file.json`
+    // stays clean.
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+    let pb = ProgressBar::new(total).with_finish(indicatif::ProgressFinish::AndClear);
+    pb.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+    pb.set_style(
+        ProgressStyle::with_template(
+            "  {spinner:.cyan} Bitbucket: scanning repos [{bar:20.cyan/blue}] {pos}/{len}",
+        )
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏ "),
+    );
+    pb.enable_steady_tick(Duration::from_millis(80));
+    Some(pb)
 }
 
 /// Page through `/repositories/{workspace}` and collect repo slugs,

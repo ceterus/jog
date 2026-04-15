@@ -19,7 +19,9 @@ cp target/release/jog /usr/local/bin/   # or anywhere on PATH
 
 ## Setup
 
-Credentials live in the macOS Keychain. One-time prompt:
+Credentials live in your OS's native credential store (macOS Keychain,
+Linux Secret Service, or Windows Credential Manager) via the `keyring` crate.
+One-time prompt:
 
 ```bash
 jog setup
@@ -43,7 +45,7 @@ Shows the stored base URL, email, masked token, and the config file path.
 
 ### Env-var override (optional)
 
-For CI or scripted use, env vars take precedence over Keychain:
+For CI or scripted use, env vars take precedence over the credential store:
 
 - `JIRA_BASE_URL`
 - `JIRA_EMAIL`
@@ -51,7 +53,7 @@ For CI or scripted use, env vars take precedence over Keychain:
 - `JIRA_ACCOUNT_ID` / `JIRA_DISPLAY_NAME` — fallback identity when `/myself`
   fails (rare; usually only needed on locked-down token scopes)
 
-Leave them unset to use Keychain.
+Leave them unset to use the credential store.
 
 ## Config file
 
@@ -160,12 +162,17 @@ Blockers:
 | Command      | What it does                                       |
 | ------------ | -------------------------------------------------- |
 | `jog`        | Print the standup summary (default command)        |
-| `jog setup`  | Prompt for credentials and save to macOS Keychain  |
+| `jog setup`  | Prompt for credentials and save to OS credential store |
 | `jog config` | Show stored credentials (masked) and config path   |
 
 ## Troubleshooting
 
 - **`JIRA_API_TOKEN not set and not in Keychain`** — run `jog setup`.
+- **Linux: keyring errors on first use** — needs a running Secret Service
+  provider (GNOME Keyring, KWallet with secret-service, or KeePassXC with
+  its Secret Service integration enabled). On a fresh headless VM, install
+  `gnome-keyring` and ensure the session bus is running, or just use env
+  vars instead.
 - **`/myself failed`** (with `--debug`) — your token may be scoped and
   blocking `/rest/api/3/myself`. Create a non-scoped "Create API token"
   instead, or set `JIRA_ACCOUNT_ID` + `JIRA_DISPLAY_NAME` env vars.
@@ -177,6 +184,15 @@ Blockers:
 
 ## Platform
 
-macOS only for credential storage (uses the `security` CLI). The rest of the
-binary is portable; on Linux/Windows set `JIRA_*` env vars instead of running
-`jog setup`.
+Cross-platform credential storage via the [`keyring`](https://crates.io/crates/keyring)
+crate:
+
+- **macOS** — login Keychain (`apple-native` feature). Existing entries
+  written by `security add-generic-password` are read transparently.
+- **Linux** — Secret Service over DBus (`sync-secret-service` +
+  `crypto-rust`). Works with GNOME Keyring, KWallet (secret-service),
+  KeePassXC.
+- **Windows** — Credential Manager (`windows-native`).
+
+If your platform can't provide a credential store (headless CI, locked-down
+servers, etc.), fall back to the `JIRA_*` env vars.

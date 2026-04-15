@@ -1,28 +1,18 @@
 use anyhow::{anyhow, Context, Result};
+use keyring::Entry;
 use std::env;
 use std::io::{self, Write};
-use std::process::Command;
 
 pub const KEYCHAIN_SERVICE_TOKEN: &str = "jog_api_token";
 pub const KEYCHAIN_SERVICE_EMAIL: &str = "jog_email";
 pub const KEYCHAIN_SERVICE_URL: &str = "jog_base_url";
 
+/// Cross-platform credential lookup. Uses the OS-native credential store via
+/// the `keyring` crate: macOS Keychain, Linux Secret Service, Windows
+/// Credential Manager.
 pub fn keychain_get(service: &str) -> Option<String> {
-    let out = Command::new("security")
-        .args([
-            "find-generic-password",
-            "-a",
-            &whoami(),
-            "-s",
-            service,
-            "-w",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let entry = Entry::new(service, &whoami()).ok()?;
+    let val = entry.get_password().ok()?.trim().to_string();
     if val.is_empty() {
         None
     } else {
@@ -31,32 +21,21 @@ pub fn keychain_get(service: &str) -> Option<String> {
 }
 
 pub fn keychain_set(service: &str, value: &str) -> Result<()> {
-    let _ = Command::new("security")
-        .args(["delete-generic-password", "-s", service])
-        .output();
-
-    let out = Command::new("security")
-        .args([
-            "add-generic-password",
-            "-a",
-            &whoami(),
-            "-s",
-            service,
-            "-w",
-            value,
-        ])
-        .output()
-        .context("failed to run security command")?;
-
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(anyhow!("keychain write failed: {}", err));
-    }
+    let entry = Entry::new(service, &whoami()).context("build keyring entry")?;
+    // keyring's set_password overwrites on all backends; no manual delete needed.
+    entry
+        .set_password(value)
+        .map_err(|e| anyhow!("credential store write failed: {}", e))?;
     Ok(())
 }
 
+/// Username used as the "account" field in the credential store. Preserves the
+/// pre-keyring macOS layout (USER env var) so existing entries still resolve,
+/// and falls back to USERNAME for Windows.
 fn whoami() -> String {
-    env::var("USER").unwrap_or_else(|_| "unknown".to_string())
+    env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .unwrap_or_else(|_| "jog".to_string())
 }
 
 pub fn prompt(label: &str, current: Option<&str>, secret: bool) -> Result<String> {
@@ -91,7 +70,7 @@ pub fn prompt(label: &str, current: Option<&str>, secret: bool) -> Result<String
 }
 
 pub fn run_setup() -> Result<()> {
-    println!("jog setup — credentials stored in macOS Keychain\n");
+    println!("jog setup — credentials stored in your OS credential store\n");
 
     println!(
         "  You need an Atlassian API token (non-scoped — works for Jira, Bitbucket, Confluence)."
@@ -118,7 +97,7 @@ pub fn run_setup() -> Result<()> {
     keychain_set(KEYCHAIN_SERVICE_EMAIL, &email)?;
     keychain_set(KEYCHAIN_SERVICE_TOKEN, &token)?;
 
-    println!("\n✓ Credentials saved to Keychain.");
+    println!("\n✓ Credentials saved to your OS credential store.");
     println!("  Run `jog` to see your standup.");
     Ok(())
 }
@@ -150,5 +129,5 @@ pub fn run_config() {
         println!("  Config:    (not created — using defaults)");
     }
 
-    println!("\n  Source: env vars > Keychain > config.toml");
+    println!("\n  Source: env vars > OS credential store > config.toml");
 }

@@ -189,3 +189,63 @@ pub fn done_statuses_jql(statuses: &[String]) -> String {
     let quoted: Vec<String> = statuses.iter().map(|s| format!("\"{}\"", s)).collect();
     quoted.join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn project_clause_empty() {
+        assert_eq!(project_jql_clause(&[]), "");
+    }
+
+    #[test]
+    fn project_clause_single() {
+        assert_eq!(project_jql_clause(&s(&["PROJ"])), "project = PROJ");
+    }
+
+    #[test]
+    fn project_clause_multiple() {
+        assert_eq!(
+            project_jql_clause(&s(&["PROJ", "INFRA"])),
+            "project IN (PROJ, INFRA)"
+        );
+    }
+
+    #[test]
+    fn done_statuses_quotes_and_joins() {
+        assert_eq!(
+            done_statuses_jql(&s(&["Done", "Closed", "Resolved"])),
+            "\"Done\", \"Closed\", \"Resolved\""
+        );
+    }
+
+    #[test]
+    fn done_statuses_empty() {
+        assert_eq!(done_statuses_jql(&[]), "");
+    }
+
+    #[test]
+    fn default_app_config_has_expected_field_ids() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.fields.story_points, "customfield_10047");
+        assert_eq!(cfg.fields.sprint, "customfield_10010");
+        assert_eq!(cfg.output.format, "text");
+        assert_eq!(cfg.ai.provider, "none");
+        assert!(cfg.jira.base_url.is_empty());
+        assert!(cfg.jira.projects.is_empty());
+    }
+
+    #[test]
+    fn default_statuses_include_core_set() {
+        let cfg = AppConfig::default();
+        assert!(cfg.statuses.in_progress.iter().any(|s| s == "In Progress"));
+        assert!(cfg.statuses.done.iter().any(|s| s == "Done"));
+        assert!(cfg.statuses.done.iter().any(|s| s == "Closed"));
+        assert!(cfg.statuses.done.iter().any(|s| s == "Resolved"));
+    }
+}

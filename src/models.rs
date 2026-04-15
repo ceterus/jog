@@ -94,3 +94,51 @@ pub fn derive_me_from_issues(issues: &[Value]) -> Option<Myself> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn derive_me_picks_first_assignee() {
+        // Env-var path only triggers if JIRA_ACCOUNT_ID is set; don't set it
+        // here and rely on the issue-array fallback.
+        let issues = vec![
+            json!({"fields": {"assignee": null}}),
+            json!({"fields": {"assignee": {"accountId": "abc123", "displayName": "Jane"}}}),
+        ];
+        let me = derive_me_from_issues(&issues).unwrap();
+        assert_eq!(me.account_id, "abc123");
+        assert_eq!(me.display_name, "Jane");
+    }
+
+    #[test]
+    fn derive_me_defaults_display_name_when_missing() {
+        let issues = vec![json!({"fields": {"assignee": {"accountId": "x"}}})];
+        let me = derive_me_from_issues(&issues).unwrap();
+        assert_eq!(me.account_id, "x");
+        assert_eq!(me.display_name, "you");
+    }
+
+    #[test]
+    fn derive_me_returns_none_when_no_assignees() {
+        // Guard: skip if the user running tests has JIRA_ACCOUNT_ID set —
+        // derive_me would happily pick that up and succeed.
+        if env::var("JIRA_ACCOUNT_ID").is_ok() {
+            return;
+        }
+        let issues = vec![json!({"fields": {}}), json!({"fields": {"assignee": null}})];
+        assert!(derive_me_from_issues(&issues).is_none());
+    }
+
+    #[test]
+    fn derive_me_skips_assignees_with_empty_account_id() {
+        let issues = vec![
+            json!({"fields": {"assignee": {"accountId": "", "displayName": "Nobody"}}}),
+            json!({"fields": {"assignee": {"accountId": "real", "displayName": "Someone"}}}),
+        ];
+        let me = derive_me_from_issues(&issues).unwrap();
+        assert_eq!(me.account_id, "real");
+    }
+}

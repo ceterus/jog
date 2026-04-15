@@ -1,0 +1,96 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::env;
+
+use serde_json::Value;
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct Myself {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct Activity {
+    pub summary: String,
+    pub status: String,
+    pub transitions: Vec<String>,
+    pub my_comments: Vec<String>,
+    pub updated_fields: Vec<String>,
+    pub assigned_to_me: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct SprintStats {
+    pub name: String,
+    /// "active" for an open sprint, "closed" when falling back to a recently
+    /// closed sprint (e.g. the morning after a sprint closes).
+    pub state: String,
+    pub days_remaining: i64,
+    pub total_days: i64,
+    pub days_elapsed: i64,
+    pub points_done: f64,
+    pub points_total: f64,
+    pub issues_done: usize,
+    pub issues_total: usize,
+    pub avg_resolve_hours: Option<f64>,
+    pub avg_in_progress_hours: Option<f64>,
+    pub avg_in_review_hours: Option<f64>,
+    pub avg_qa_hours: Option<f64>,
+    pub avg_todo_to_done_hours: Option<f64>,
+    pub points_per_day: Option<f64>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct TodayIssue {
+    pub key: String,
+    pub summary: String,
+    pub status: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct StandupData {
+    pub user_name: String,
+    /// Start of the "since last standup" window (YYYY-MM-DD).
+    pub start_date: String,
+    /// End of the window — usually now (YYYY-MM-DD HH:MM).
+    pub end_datetime: String,
+    /// Human label for the section header, e.g. "Since Friday".
+    pub since_label: String,
+    pub activities: BTreeMap<String, Activity>,
+    pub today: Vec<TodayIssue>,
+    pub sprint: Option<SprintStats>,
+}
+
+pub fn derive_me_from_issues(issues: &[Value]) -> Option<Myself> {
+    if let (Ok(id), Ok(name)) = (env::var("JIRA_ACCOUNT_ID"), env::var("JIRA_DISPLAY_NAME")) {
+        return Some(Myself {
+            account_id: id,
+            display_name: name,
+        });
+    }
+    if let Ok(id) = env::var("JIRA_ACCOUNT_ID") {
+        return Some(Myself {
+            account_id: id,
+            display_name: "you".to_string(),
+        });
+    }
+    for issue in issues {
+        if let Some(a) = issue.get("fields").and_then(|f| f.get("assignee")) {
+            let id = a.get("accountId").and_then(|x| x.as_str()).unwrap_or("");
+            let name = a
+                .get("displayName")
+                .and_then(|x| x.as_str())
+                .unwrap_or("you");
+            if !id.is_empty() {
+                return Some(Myself {
+                    account_id: id.to_string(),
+                    display_name: name.to_string(),
+                });
+            }
+        }
+    }
+    None
+}

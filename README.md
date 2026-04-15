@@ -1,0 +1,182 @@
+# jog
+
+Jog your memory before standup.
+
+A small Rust CLI that pulls your Jira activity from the previous work day (plus
+today so far) and prints a standup-ready summary: status transitions you made,
+comments you wrote, fields you touched, what's in progress now, and sprint
+health.
+
+Previous work day = yesterday, or Friday if today is Monday (Sunday also rolls
+back to Friday).
+
+## Install
+
+```bash
+cargo build --release
+cp target/release/jog /usr/local/bin/   # or anywhere on PATH
+```
+
+## Setup
+
+Credentials live in the macOS Keychain. One-time prompt:
+
+```bash
+jog setup
+```
+
+You'll be asked for:
+
+- **Jira base URL** (e.g. `https://your-org.atlassian.net`)
+- **Jira email** (the Atlassian account email)
+- **API token** — create at
+  https://id.atlassian.com/manage-profile/security/api-tokens
+  (use "Create API token", not the scoped variant)
+
+Verify:
+
+```bash
+jog config
+```
+
+Shows the stored base URL, email, masked token, and the config file path.
+
+### Env-var override (optional)
+
+For CI or scripted use, env vars take precedence over Keychain:
+
+- `JIRA_BASE_URL`
+- `JIRA_EMAIL`
+- `JIRA_API_TOKEN`
+- `JIRA_ACCOUNT_ID` / `JIRA_DISPLAY_NAME` — fallback identity when `/myself`
+  fails (rare; usually only needed on locked-down token scopes)
+
+Leave them unset to use Keychain.
+
+## Config file
+
+`~/.config/jog/config.toml` (created on demand — optional). Sensible defaults
+are used when fields are missing.
+
+```toml
+[jira]
+base_url = "https://your-org.atlassian.net"   # used only if Keychain + env are empty
+projects = ["PROJ", "INFRA"]                  # scope queries to these projects
+board_id = 123                                # reserved for future use
+
+[fields]
+story_points = "customfield_10047"            # your instance's Story Points field id
+sprint       = "customfield_10010"            # your instance's Sprint field id
+
+[statuses]
+in_progress = ["In Progress"]
+in_review   = ["IN REVIEW"]
+qa          = ["QA"]
+done        = ["Done", "Closed", "Resolved"]
+
+[ai]
+provider = "none"                             # reserved
+
+[output]
+format = "text"                               # text | json | markdown
+```
+
+Find your custom field IDs at
+`https://<your-org>.atlassian.net/rest/api/3/field` (look for names like
+"Story Points" and "Sprint").
+
+## Run
+
+```bash
+jog                         # previous work day + today so far
+jog --date 2026-04-10       # override the start date
+jog --format markdown       # text (default) | markdown | json
+jog --debug                 # print JQL, window, issue counts, config path
+```
+
+## What it pulls
+
+Activity window = `[start_date 00:00 local, now]`.
+
+- Issues **updated** in the window where you were assignee, reporter,
+  worklog author, or the person who changed status (from the changelog).
+- **Status transitions** you made (from each issue's changelog, filtered to
+  your accountId + the window).
+- **Comments** you wrote (author + created filtered).
+- **Field updates** you made (any non-status changelog item).
+- **Today** — your open issues in the active sprint, grouped by status.
+- **Sprint stats** — points/issues done, velocity (pts/day), required pace to
+  finish on time, average cycle times (Created → Done, To Do → Done,
+  In Progress, In Review, QA).
+
+### Sprint-boundary behavior
+
+Activity queries aren't sprint-scoped, so the morning after a sprint closes
+you still see yesterday's work (even if those issues moved out of the active
+sprint). Sprint stats fall back to the most recently closed sprint when no
+sprint is currently open, and render as `closed — ended N days ago` instead
+of pretending nothing exists.
+
+## Sample output
+
+```
+═══════════════════════════════════════════
+ Standup — Jane Doe (2026-04-14)
+═══════════════════════════════════════════
+
+Since yesterday:
+  • [PROJ-123] Refactor auth middleware (status: In Review)
+      - transitioned: In Progress → In Review
+      - commented: "Pushed PR, ready for review"
+  • [PROJ-145] Flaky test in checkout (status: In Progress)
+      - updated: description
+
+Today:
+  • [PROJ-145] Flaky test in checkout (In Progress)
+  • [PROJ-162] Migrate logging to structured JSON (To Do)
+
+Sprint:
+  Sprint 42 (3 days left of 14)
+  Points: 18/28 done (64%)
+  Issues: 7/11 done
+
+  Velocity:
+    Current:  1.6 pts/day
+    Needed:   3.3 pts/day to finish on time
+
+  Avg Cycle Times (completed tickets):
+    Created → Done        2d 4h
+    To Do → Done          1d 6h
+    In Progress           8h
+    In Review             3h
+    QA                    1h
+
+Blockers:
+  • <fill in or 'none'>
+```
+
+## Commands
+
+| Command      | What it does                                       |
+| ------------ | -------------------------------------------------- |
+| `jog`        | Print the standup summary (default command)        |
+| `jog setup`  | Prompt for credentials and save to macOS Keychain  |
+| `jog config` | Show stored credentials (masked) and config path   |
+
+## Troubleshooting
+
+- **`JIRA_API_TOKEN not set and not in Keychain`** — run `jog setup`.
+- **`/myself failed`** (with `--debug`) — your token may be scoped and
+  blocking `/rest/api/3/myself`. Create a non-scoped "Create API token"
+  instead, or set `JIRA_ACCOUNT_ID` + `JIRA_DISPLAY_NAME` env vars.
+- **Sprint section missing** — no open sprint and no sprint closed within
+  the last 2 days, or no assigned issues in either. Check `[jira].projects`
+  in `config.toml`.
+- **Wrong story-point totals** — custom field IDs differ per Jira instance.
+  Set `[fields].story_points` and `[fields].sprint` in `config.toml`.
+
+## Platform
+
+macOS only for credential storage (uses the `security` CLI). The rest of the
+binary is portable; on Linux/Windows set `JIRA_*` env vars instead of running
+`jog setup`.

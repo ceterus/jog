@@ -60,9 +60,7 @@ pub fn render(data: &StandupData) {
             } else {
                 0.0
             };
-            println!(
-                "| Metric | Value |",
-            );
+            println!("| Metric | Value |",);
             println!("| --- | --- |");
             println!(
                 "| Points | {}/{} ({:.0}%) |",

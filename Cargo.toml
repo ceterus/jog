@@ -3,6 +3,8 @@ name = "jog"
 version = "0.1.0"
 edition = "2021"
 description = "Jog your memory before standup — Atlassian activity summary CLI"
+license = "MIT"
+repository = "https://github.com/ceterus/jog"
 
 [dependencies]
 anyhow = "1"

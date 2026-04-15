@@ -9,14 +9,25 @@ pub const KEYCHAIN_SERVICE_URL: &str = "jog_base_url";
 
 pub fn keychain_get(service: &str) -> Option<String> {
     let out = Command::new("security")
-        .args(["find-generic-password", "-a", &whoami(), "-s", service, "-w"])
+        .args([
+            "find-generic-password",
+            "-a",
+            &whoami(),
+            "-s",
+            service,
+            "-w",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
     let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if val.is_empty() { None } else { Some(val) }
+    if val.is_empty() {
+        None
+    } else {
+        Some(val)
+    }
 }
 
 pub fn keychain_set(service: &str, value: &str) -> Result<()> {
@@ -82,7 +93,9 @@ pub fn prompt(label: &str, current: Option<&str>, secret: bool) -> Result<String
 pub fn run_setup() -> Result<()> {
     println!("jog setup — credentials stored in macOS Keychain\n");
 
-    println!("  You need an Atlassian API token (non-scoped — works for Jira, Bitbucket, Confluence).");
+    println!(
+        "  You need an Atlassian API token (non-scoped — works for Jira, Bitbucket, Confluence)."
+    );
     println!("  1. Open: https://id.atlassian.com/manage-profile/security/api-tokens");
     println!("  2. Click \"Create API token\" (NOT \"Create API token with scopes\")");
     println!("  3. Name it anything (e.g. jog), copy the token");

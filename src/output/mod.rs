@@ -1,6 +1,6 @@
-pub mod text;
 pub mod json;
 pub mod markdown;
+pub mod text;
 
 use crate::models::StandupData;
 

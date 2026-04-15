@@ -320,3 +320,190 @@ pub async fn fetch_sprint_stats(
         },
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── parse_datetime ────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_datetime_rfc3339() {
+        let dt = parse_datetime("2026-04-14T10:30:00+00:00").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2026-04-14T10:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_datetime_jira_ms() {
+        // Jira's usual shape: milliseconds + offset without colon. Verify by
+        // component rather than epoch seconds (avoids hand-computed mistakes).
+        let dt = parse_datetime("2026-04-14T10:30:00.123+0000")
+            .unwrap()
+            .naive_utc();
+        assert_eq!(
+            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-04-14 10:30:00"
+        );
+    }
+
+    #[test]
+    fn parse_datetime_rejects_garbage() {
+        assert!(parse_datetime("not-a-date").is_none());
+        assert!(parse_datetime("").is_none());
+    }
+
+    // ── calc_status_durations ─────────────────────────────────────────────
+
+    fn history(created: &str, field: &str, from: &str, to: &str) -> Value {
+        json!({
+            "created": created,
+            "items": [{"field": field, "fromString": from, "toString": to}],
+        })
+    }
+
+    #[test]
+    fn durations_empty_changelog() {
+        let cl = json!({ "histories": [] });
+        assert!(calc_status_durations(&cl).is_empty());
+    }
+
+    #[test]
+    fn durations_single_transition_has_open_ended_entry() {
+        // Only one transition means the status's end = now(), which is
+        // non-deterministic. Just assert the status appears.
+        let cl = json!({
+            "histories": [history("2026-04-14T10:00:00.000+0000", "status", "To Do", "In Progress")],
+        });
+        let d = calc_status_durations(&cl);
+        assert!(d.contains_key("In Progress"));
+    }
+
+    #[test]
+    fn durations_two_transitions_deterministic() {
+        // 10:00 → In Progress, 12:30 → In Review. "In Progress" = 2.5h.
+        // "In Review" is the trailing status; skip asserting on it.
+        let cl = json!({
+            "histories": [
+                history("2026-04-14T10:00:00.000+0000", "status", "To Do", "In Progress"),
+                history("2026-04-14T12:30:00.000+0000", "status", "In Progress", "In Review"),
+            ],
+        });
+        let d = calc_status_durations(&cl);
+        assert!((d.get("In Progress").copied().unwrap() - 2.5).abs() < 1e-6);
+        assert!(d.contains_key("In Review"));
+    }
+
+    #[test]
+    fn durations_ignores_non_status_items() {
+        let cl = json!({
+            "histories": [
+                history("2026-04-14T10:00:00.000+0000", "assignee", "a", "b"),
+                history("2026-04-14T11:00:00.000+0000", "status", "To Do", "Done"),
+            ],
+        });
+        let d = calc_status_durations(&cl);
+        // Only the status transition contributes; no "a" or "b" keys.
+        assert!(!d.contains_key("a"));
+        assert!(!d.contains_key("b"));
+        assert!(d.contains_key("Done"));
+    }
+
+    #[test]
+    fn durations_unordered_histories_sorted_by_time() {
+        // Provide histories out of chronological order — should still compute
+        // In Progress = 2h (10:00 → 12:00) regardless of input order.
+        let cl = json!({
+            "histories": [
+                history("2026-04-14T12:00:00.000+0000", "status", "In Progress", "Done"),
+                history("2026-04-14T10:00:00.000+0000", "status", "To Do", "In Progress"),
+            ],
+        });
+        let d = calc_status_durations(&cl);
+        assert!((d.get("In Progress").copied().unwrap() - 2.0).abs() < 1e-6);
+    }
+
+    // ── pick_sprint ───────────────────────────────────────────────────────
+
+    fn issue_with_sprints(field: &str, sprints: Value) -> Value {
+        json!({ "fields": { field: sprints } })
+    }
+
+    fn sprint(name: &str, state: &str, end: Option<&str>) -> Value {
+        let mut o = serde_json::Map::new();
+        o.insert("name".into(), json!(name));
+        o.insert("state".into(), json!(state));
+        if let Some(e) = end {
+            o.insert("endDate".into(), json!(e));
+        }
+        Value::Object(o)
+    }
+
+    #[test]
+    fn pick_sprint_active_returns_first_match() {
+        let issues = vec![issue_with_sprints(
+            "sp",
+            json!([
+                sprint("Sprint 41", "closed", Some("2026-04-01T00:00:00+00:00")),
+                sprint("Sprint 42", "active", Some("2026-04-15T00:00:00+00:00")),
+            ]),
+        )];
+        let got = pick_sprint(&issues, "sp", "active").unwrap();
+        assert_eq!(got.get("name").unwrap().as_str().unwrap(), "Sprint 42");
+    }
+
+    #[test]
+    fn pick_sprint_closed_picks_latest_end_date() {
+        // Two closed sprints across two issues — should pick the one with
+        // the later endDate.
+        let issues = vec![
+            issue_with_sprints(
+                "sp",
+                json!([sprint(
+                    "Sprint 40",
+                    "closed",
+                    Some("2026-03-20T00:00:00+00:00")
+                )]),
+            ),
+            issue_with_sprints(
+                "sp",
+                json!([sprint(
+                    "Sprint 41",
+                    "closed",
+                    Some("2026-04-10T00:00:00+00:00")
+                )]),
+            ),
+        ];
+        let got = pick_sprint(&issues, "sp", "closed").unwrap();
+        assert_eq!(got.get("name").unwrap().as_str().unwrap(), "Sprint 41");
+    }
+
+    #[test]
+    fn pick_sprint_no_match_returns_none() {
+        let issues = vec![issue_with_sprints(
+            "sp",
+            json!([sprint(
+                "Sprint 41",
+                "closed",
+                Some("2026-04-10T00:00:00+00:00")
+            )]),
+        )];
+        assert!(pick_sprint(&issues, "sp", "active").is_none());
+    }
+
+    #[test]
+    fn pick_sprint_skips_closed_without_enddate() {
+        // Closed sprint without endDate can't be ranked → no pick.
+        let issues = vec![issue_with_sprints(
+            "sp",
+            json!([sprint("Sprint 41", "closed", None)]),
+        )];
+        assert!(pick_sprint(&issues, "sp", "closed").is_none());
+    }
+
+    #[test]
+    fn pick_sprint_handles_missing_sprint_field() {
+        let issues = vec![json!({ "fields": {} })];
+        assert!(pick_sprint(&issues, "sp", "active").is_none());
+    }
+}

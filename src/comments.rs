@@ -106,3 +106,111 @@ fn looks_like_log(s: &str) -> bool {
         || trimmed.contains("public>")
         || (trimmed.starts_with("20") && trimmed.chars().nth(4) == Some('-'))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── adf_to_text ──────────────────────────────────────────────────────
+
+    #[test]
+    fn adf_flattens_paragraph_text() {
+        let adf = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "Hello world"}],
+            }],
+        });
+        assert_eq!(adf_to_text(&adf), "Hello world");
+    }
+
+    #[test]
+    fn adf_joins_multiple_paragraphs_with_newline() {
+        let adf = json!({
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "line 1"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "line 2"}]},
+            ],
+        });
+        assert_eq!(adf_to_text(&adf), "line 1\nline 2");
+    }
+
+    #[test]
+    fn adf_skips_code_blocks() {
+        let adf = json!({
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "before"}]},
+                {"type": "codeBlock", "content": [{"type": "text", "text": "SELECT * FROM foo;"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "after"}]},
+            ],
+        });
+        let out = adf_to_text(&adf);
+        assert!(out.contains("before"));
+        assert!(out.contains("after"));
+        assert!(!out.contains("SELECT"));
+    }
+
+    #[test]
+    fn adf_skips_inline_code() {
+        let adf = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "use "},
+                    {"type": "inlineCode", "content": [{"type": "text", "text": "foo()"}]},
+                    {"type": "text", "text": " here"},
+                ],
+            }],
+        });
+        let out = adf_to_text(&adf);
+        assert!(out.contains("use"));
+        assert!(out.contains("here"));
+        assert!(!out.contains("foo()"));
+    }
+
+    #[test]
+    fn adf_empty_doc_returns_empty_string() {
+        assert_eq!(adf_to_text(&json!({"type": "doc", "content": []})), "");
+    }
+
+    // ── clean_comment ────────────────────────────────────────────────────
+
+    #[test]
+    fn clean_comment_strips_log_prefix() {
+        let out = clean_comment("[2026-04-14] Connected to db\nReal comment here");
+        assert_eq!(out, Some("Real comment here".to_string()));
+    }
+
+    #[test]
+    fn clean_comment_drops_sql_lines() {
+        let out =
+            clean_comment("SELECT * FROM users;\nINSERT INTO log VALUES (1);\nLooks like a bug");
+        assert_eq!(out, Some("Looks like a bug".to_string()));
+    }
+
+    #[test]
+    fn clean_comment_truncates_over_120_chars() {
+        let long = "x".repeat(200);
+        let out = clean_comment(&long).unwrap();
+        // 120 chars + ellipsis
+        assert_eq!(out.chars().count(), 121);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn clean_comment_returns_none_when_all_noise() {
+        let out = clean_comment("[log] Connected to postgres\nSELECT 1;\n");
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn clean_comment_collapses_whitespace_in_first_line() {
+        let out = clean_comment("hello   world\tfriend").unwrap();
+        assert_eq!(out, "hello world friend");
+    }
+}

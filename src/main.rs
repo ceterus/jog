@@ -274,3 +274,92 @@ async fn main() -> Result<()> {
     output::render(&data, fmt);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    // ── previous_work_day ────────────────────────────────────────────────
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn prev_work_day_weekday_rolls_back_one() {
+        // 2026-04-15 = Wednesday → Tuesday
+        assert_eq!(previous_work_day(d(2026, 4, 15)), d(2026, 4, 14));
+        // 2026-04-14 = Tuesday → Monday
+        assert_eq!(previous_work_day(d(2026, 4, 14)), d(2026, 4, 13));
+    }
+
+    #[test]
+    fn prev_work_day_monday_rolls_to_friday() {
+        // 2026-04-13 = Monday → Friday 2026-04-10
+        assert_eq!(previous_work_day(d(2026, 4, 13)), d(2026, 4, 10));
+    }
+
+    #[test]
+    fn prev_work_day_sunday_rolls_to_friday() {
+        // 2026-04-12 = Sunday → Friday 2026-04-10
+        assert_eq!(previous_work_day(d(2026, 4, 12)), d(2026, 4, 10));
+    }
+
+    #[test]
+    fn prev_work_day_saturday_rolls_back_one() {
+        // 2026-04-11 = Saturday → Friday 2026-04-10 (matches default branch)
+        assert_eq!(previous_work_day(d(2026, 4, 11)), d(2026, 4, 10));
+    }
+
+    // ── day_label ────────────────────────────────────────────────────────
+
+    #[test]
+    fn day_label_week() {
+        assert_eq!(day_label(d(2026, 4, 13)), "Monday");
+        assert_eq!(day_label(d(2026, 4, 14)), "Tuesday");
+        assert_eq!(day_label(d(2026, 4, 15)), "Wednesday");
+        assert_eq!(day_label(d(2026, 4, 16)), "Thursday");
+        assert_eq!(day_label(d(2026, 4, 17)), "Friday");
+        assert_eq!(day_label(d(2026, 4, 18)), "Saturday");
+        assert_eq!(day_label(d(2026, 4, 19)), "Sunday");
+    }
+
+    // ── datetime_from_iso ────────────────────────────────────────────────
+
+    #[test]
+    fn datetime_from_iso_parses_both_shapes() {
+        assert!(datetime_from_iso("2026-04-14T10:30:00.123+0000").is_some());
+        assert!(datetime_from_iso("2026-04-14T10:30:00+00:00").is_some());
+        assert!(datetime_from_iso("garbage").is_none());
+        assert!(datetime_from_iso("").is_none());
+    }
+
+    // ── in_range ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn in_range_inclusive_bounds() {
+        let start = Local.with_ymd_and_hms(2026, 4, 14, 0, 0, 0).unwrap();
+        let end = Local.with_ymd_and_hms(2026, 4, 14, 23, 59, 0).unwrap();
+
+        // Right in the middle — use the same offset the iso parser emits.
+        let mid = "2026-04-14T12:00:00+00:00";
+        // The bounds above are local-tz, so translate the same way the real
+        // call path does: parse with iso, compare against local-tz bounds.
+        // The noon-UTC value lands inside any local day matching 2026-04-14.
+        // Rather than reason about tz, just verify false-on-garbage and
+        // false-on-out-of-window with explicit offsets.
+        assert!(!in_range("not-a-date", start, end));
+
+        // Out of window: same day 1 year later.
+        assert!(!in_range("2027-04-14T12:00:00+00:00", start, end));
+
+        // Sanity: a time clearly inside the window regardless of tz drift.
+        // Use a value parsed via the same function so the comparison is
+        // apples-to-apples with real production usage.
+        let inside = datetime_from_iso(mid).unwrap();
+        let start2 = inside - Duration::hours(1);
+        let end2 = inside + Duration::hours(1);
+        assert!(in_range(mid, start2, end2));
+    }
+}

@@ -19,3 +19,14 @@ toml = "0.8"
 dirs = "5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 urlencoding = "2"
+
+# Cross-platform credential storage. Per-target features keep each platform
+# on its native backend without pulling in the others' deps.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }

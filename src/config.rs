@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::auth;
 
 /// Top-level config file structure (~/.config/jog/config.toml)
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct AppConfig {
     pub jira: JiraConfig,
@@ -17,34 +17,12 @@ pub struct AppConfig {
     pub output: OutputConfig,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            jira: JiraConfig::default(),
-            fields: FieldsConfig::default(),
-            statuses: StatusesConfig::default(),
-            ai: AiConfig::default(),
-            output: OutputConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct JiraConfig {
     pub base_url: String,
     pub projects: Vec<String>,
     pub board_id: Option<u64>,
-}
-
-impl Default for JiraConfig {
-    fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            projects: vec![],
-            board_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -78,7 +56,11 @@ impl Default for StatusesConfig {
             in_progress: vec!["In Progress".to_string()],
             in_review: vec!["IN REVIEW".to_string()],
             qa: vec!["QA".to_string()],
-            done: vec!["Done".to_string(), "Closed".to_string(), "Resolved".to_string()],
+            done: vec![
+                "Done".to_string(),
+                "Closed".to_string(),
+                "Resolved".to_string(),
+            ],
         }
     }
 }
@@ -142,14 +124,22 @@ impl Credentials {
             .or_else(|| auth::keychain_get(auth::KEYCHAIN_SERVICE_URL))
             .or_else(|| {
                 let u = &app_config.jira.base_url;
-                if u.is_empty() { None } else { Some(u.clone()) }
+                if u.is_empty() {
+                    None
+                } else {
+                    Some(u.clone())
+                }
             })
             .context("JIRA_BASE_URL not set and not in Keychain. Run `jog setup`.")?
             .trim()
             .trim_end_matches('/')
             .to_string();
 
-        Ok(Self { base_url, email, token })
+        Ok(Self {
+            base_url,
+            email,
+            token,
+        })
     }
 
     pub fn auth_header(&self) -> String {
@@ -185,14 +175,6 @@ pub fn load_config() -> AppConfig {
         }
     }
     AppConfig::default()
-}
-
-pub fn save_config(cfg: &AppConfig) -> Result<()> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir).context("create config dir")?;
-    let content = toml::to_string_pretty(cfg).context("serialize config")?;
-    fs::write(config_path(), content).context("write config")?;
-    Ok(())
 }
 
 pub fn project_jql_clause(projects: &[String]) -> String {

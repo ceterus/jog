@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde_json::Value;
 
 use crate::client::post_json;
-use crate::config::{AppConfig, Credentials, project_jql_clause, done_statuses_jql};
+use crate::config::{done_statuses_jql, project_jql_clause, AppConfig, Credentials};
 use crate::models::TodayIssue;
 
 pub async fn search_updated(
@@ -38,7 +38,12 @@ pub async fn search_updated(
     );
 
     let fields = vec![
-        "summary", "status", "issuetype", "priority", "project", "assignee",
+        "summary",
+        "status",
+        "issuetype",
+        "priority",
+        "project",
+        "assignee",
     ];
 
     let mut out = Vec::new();
@@ -109,7 +114,11 @@ pub async fn search_in_progress(
             let f = i.get("fields")?;
             let summary = f.get("summary")?.as_str()?.to_string();
             let status = f.get("status")?.get("name")?.as_str()?.to_string();
-            Some(TodayIssue { key, summary, status })
+            Some(TodayIssue {
+                key,
+                summary,
+                status,
+            })
         })
         .collect())
 }

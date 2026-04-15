@@ -269,10 +269,7 @@ async fn main() -> Result<()> {
         sprint: sprint_stats,
     };
 
-    let fmt = args
-        .format
-        .as_deref()
-        .unwrap_or(&app_cfg.output.format);
+    let fmt = args.format.as_deref().unwrap_or(&app_cfg.output.format);
 
     output::render(&data, fmt);
     Ok(())

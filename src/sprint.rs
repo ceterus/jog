@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::client::post_json;
-use crate::config::{AppConfig, Credentials, project_jql_clause};
+use crate::config::{project_jql_clause, AppConfig, Credentials};
 use crate::models::SprintStats;
 
 fn parse_datetime(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {

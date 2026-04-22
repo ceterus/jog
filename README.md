@@ -83,6 +83,7 @@ provider = "none"                             # reserved
 [output]
 format = "text"                               # text | json | markdown
 stats  = "full"                               # "full" | "summary" | "off"
+layout = "card"                               # "card" | "stacked" | "plain"
 ```
 
 Find your custom field IDs at
@@ -98,6 +99,8 @@ jog --format markdown       # text (default) | markdown | json
 jog --stats summary         # hide personal metrics, keep structural facts
 jog --no-stats              # hide the stats panel entirely
 jog --no-pr                 # skip the Bitbucket PR summary for this run
+jog --stacked               # force the stacked card layout
+jog --plain                 # single-column plain text (no box-drawing)
 jog --debug                 # print JQL, window, issue counts, config path
 ```
 
@@ -154,6 +157,33 @@ via `[output].stats` in config, or override per-run with `--stats` /
 The activity log ("Since yesterday") and "Today" panel are never
 affected — those are factual history, not performance metrics.
 
+### Text layout
+
+The default `--format text` renderer is a "briefing card" — boxed
+header, coloured icons, progress bars, and a section-per-panel layout.
+It targets ~120 columns and adapts automatically:
+
+- **≥ 80 cols** — landscape: activity / PRs / sprint sit side-by-side.
+  Hidden panels (`--no-pr`, `--no-stats`) widen the remaining columns.
+- **< 80 cols** — stacked: same card styling, same colour and icons,
+  but sections flow top-to-bottom so nothing gets cramped.
+
+If you prefer the stacked look on a wide terminal, force it with
+`--stacked` (or set `[output].layout = "stacked"`). Stacked card is
+capped at 100 columns even on very wide monitors to keep the text
+readable.
+- `NO_COLOR=1`, non-TTY, or `TERM=dumb` → drops ANSI colour
+- `JOG_ASCII=1`, or a `C`/`POSIX` locale → uses ASCII icons (`*`, `o`,
+  `v`, `^`, `?`) and `#`/`-` bars
+- `JOG_WIDTH=N` → override the detected terminal width (handy for
+  testing or for piping through `less -R`)
+
+If you'd rather skip the card entirely — for piping into other tools,
+pasting into ticket systems, or just a quieter terminal — use
+`--plain` (or set `[output].layout = "plain"`). That renders the
+legacy single-column text layout regardless of terminal width. JSON
+and markdown outputs are unaffected by this setting.
+
 ## What it pulls
 
 Activity window = `[start_date 00:00 local, now]`.
@@ -191,40 +221,156 @@ of pretending nothing exists.
 
 ## Sample output
 
+### Landscape card (default, ≥ 80 cols)
+
+```
+╭─ Standup · Anthony Norfleet ────────────────────────────────────────────────────────────────── Sprint 42 · 3d left ─╮
+│ Since Tue Apr 21 · 2026-04-21 → 2026-04-22 09:04                                                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ▸ YESTERDAY · 4 tickets                     │  ▸ PULL REQUESTS                │  ▸ Sprint 42 · 3 / 14 days
+ ─────────────────────────────────────────── │  ────────────────────────────── │  ─────────────────────────────────────
+   ✓  PROJ-388  OAuth refresh race condition │    ↑  !234  payments            │    Issues     7 / 11   64%
+     Done                                    │      Retry logic for webhook    │    ██████████████░░░░░░░░
+                                             │      failures                   │
+   ✓  PROJ-389  Idempotency keys on /charge  │      opened · 0 reviews         │    Points     18 / 28   64%
+     Done                                    │                                 │    ██████████████░░░░░░░░
+     → In Review → Done                      │    ✓  !228  payments            │
+                                             │      Idempotency keys on        │    Velocity   1.6 pt/d
+   ●  PROJ-401  Dashboard latency spike      │      /charge                    │    Need       3.3 pt/d
+     In Progress                             │      merged                     │
+     ⊕ description                           │                                 │    Cycle (avg, done)
+                                             │    ⧖  !231  dashboards          │      In Progress     8h
+   ●  PROJ-412  Refund webhook retry logic   │      Latency dashboard v2       │      In Review       3h
+     In Review                               │      awaiting · 0 approvals     │      QA              1h
+     → In Progress → In Review               │                                 │
+     ⊕ sprint, story_points                  │                                 │
+     ✎ "spec covers 409 but not 425 — added… │                                 │
+
+ ▸ TODAY · 2 tickets                         │                                 │
+ ─────────────────────────────────────────── │                                 │
+   ●  PROJ-420  Backfill legacy accounts     │                                 │
+     In Progress                             │                                 │
+   ○  PROJ-425  Investigate 5xx in eu-west-1 │                                 │
+     To Do                                   │                                 │
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ● in-flight   ○ todo   ✓ done      ↑ opened  ✓ merged  ⧖ waiting                                           jog v0.1.0
+```
+
+In a real terminal, ticket keys (`PROJ-412`, `!234`) and progress bars
+render in cyan, `✓`/merged in green, `⧖`/behind-pace in yellow, and
+secondary metadata (dates, status, transitions) in dim grey.
+
+### Stacked card (narrow terminals, or `jog --stacked`)
+
+```
+╭─ Standup · Anthony Norfleet ───────────────── Sprint 42 · 3d left ─╮
+│ Since Tue Apr 21 · 2026-04-21 → 2026-04-22 09:04                   │
+╰────────────────────────────────────────────────────────────────────╯
+
+ ▸ YESTERDAY · 4 tickets
+ ────────────────────────────────────────────────────────────────────
+   ✓  PROJ-388  OAuth refresh race condition
+     Done
+
+   ✓  PROJ-389  Idempotency keys on /charge
+     Done
+     → In Review → Done
+
+   ●  PROJ-401  Dashboard latency spike
+     In Progress
+     ⊕ description
+
+   ●  PROJ-412  Refund webhook retry logic
+     In Review
+     → In Progress → In Review
+     ⊕ sprint, story_points
+     ✎ "spec covers 409 but not 425 — added test"
+
+ ▸ TODAY · 2 tickets
+ ────────────────────────────────────────────────────────────────────
+   ●  PROJ-420  Backfill legacy accounts
+     In Progress
+   ○  PROJ-425  Investigate 5xx in eu-west-1
+     To Do
+
+ ▸ PULL REQUESTS
+ ────────────────────────────────────────────────────────────────────
+   ↑  !234  payments
+     Retry logic for webhook failures
+     opened · 0 reviews
+
+   ✓  !228  payments
+     Idempotency keys on /charge
+     merged
+
+   ⧖  !231  dashboards
+     Latency dashboard v2
+     awaiting · 0 approvals
+
+ ▸ Sprint 42 · 3 / 14 days
+ ────────────────────────────────────────────────────────────────────
+   Issues     7 / 11   64%
+   ██████████████░░░░░░░░
+
+   Points     18 / 28   64%
+   ██████████████░░░░░░░░
+
+   Velocity   1.6 pt/d
+   Need       3.3 pt/d
+
+   Cycle (avg, done)
+     In Progress     8h
+     In Review       3h
+     QA              1h
+```
+
+### Plain (`jog --plain`)
+
 ```
 ═══════════════════════════════════════════
- Standup — Jane Doe (2026-04-14)
+ Standup — Anthony Norfleet (2026-04-22 09:04)
 ═══════════════════════════════════════════
 
-Since yesterday:
-  • [PROJ-123] Refactor auth middleware (status: In Review)
-      - transitioned: In Progress → In Review
-      - commented: "Pushed PR, ready for review"
-  • [PROJ-145] Flaky test in checkout (status: In Progress)
+Since Tue Apr 21 (2026-04-21 → now):
+  • [PROJ-388] OAuth refresh race condition (status: Done)
+  • [PROJ-389] Idempotency keys on /charge (status: Done)
+      - transitioned: In Review → Done
+  • [PROJ-401] Dashboard latency spike (status: In Progress)
       - updated: description
+  • [PROJ-412] Refund webhook retry logic (status: In Review)
+      - transitioned: In Progress → In Review
+      - updated: sprint, story_points
+      - commented: "spec covers 409 but not 425 — added test"
 
 Today:
-  • [PROJ-145] Flaky test in checkout (In Progress)
-  • [PROJ-162] Migrate logging to structured JSON (To Do)
+  • [PROJ-420] Backfill legacy accounts (In Progress)
+  • [PROJ-425] Investigate 5xx in eu-west-1 (To Do)
+
+Bitbucket:
+  Opened:
+    • !234 [team/payments] Retry logic for webhook failures (no approvals yet)
+  Merged:
+    • !228 [team/payments] Idempotency keys on /charge
+  Awaiting approval:
+    • !231 [team/dashboards] Latency dashboard v2 (no approvals yet)
 
 Sprint:
   Sprint 42 (3 days left of 14)
-  Points: 18/28 done (64%)
   Issues: 7/11 done
+  Points: 18/28 done (64%)
 
   Velocity:
     Current:  1.6 pts/day
     Needed:   3.3 pts/day to finish on time
 
   Avg Cycle Times (completed tickets):
-    Created → Done        2d 4h
-    To Do → Done          1d 6h
-    In Progress           8h
-    In Review             3h
-    QA                    1h
-
-Blockers:
-  • <fill in or 'none'>
+    Created → Done       2d 4h
+    To Do → Done         1d 6h
+    In Progress          8h
+    In Review            3h
+    QA                   1h
 ```
 
 ## Commands

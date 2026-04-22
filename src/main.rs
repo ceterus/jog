@@ -51,6 +51,24 @@ struct Args {
     /// Skip the Bitbucket PR summary for this run, even if configured.
     #[arg(long, global = true)]
     no_pr: bool,
+
+    /// Use the plain single-column text layout (no box-drawing, no colour).
+    /// Shorthand for `--layout plain`. Overrides `[output].layout` for this
+    /// run.
+    #[arg(long, global = true)]
+    plain: bool,
+
+    /// Force the stacked card layout (single-column, card styling).
+    /// Shorthand for `--layout stacked`. Overrides `[output].layout` for
+    /// this run.
+    #[arg(long, global = true)]
+    stacked: bool,
+
+    /// Text layout: card | stacked | plain. `card` (default) auto-picks
+    /// landscape on wide terminals and stacked on narrow ones. Only affects
+    /// `--format text`. Overrides `[output].layout` for this run.
+    #[arg(long, global = true)]
+    layout: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -342,7 +360,18 @@ async fn main() -> Result<()> {
         config::StatsMode::from_str(&app_cfg.output.stats)
     };
 
-    output::render(&data, fmt, stats_mode);
+    // CLI precedence: --plain > --stacked > --layout > [output].layout.
+    let layout_mode = if args.plain {
+        config::LayoutMode::Plain
+    } else if args.stacked {
+        config::LayoutMode::Stacked
+    } else if let Some(s) = args.layout.as_deref() {
+        config::LayoutMode::from_str(s)
+    } else {
+        config::LayoutMode::from_str(&app_cfg.output.layout)
+    };
+
+    output::render(&data, fmt, stats_mode, layout_mode);
     Ok(())
 }
 

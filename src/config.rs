@@ -102,6 +102,15 @@ pub struct OutputConfig {
     /// - "summary": just structural facts (sprint name, days left, N done / M total)
     /// - "off": hide the stats panel entirely
     pub stats: String,
+    /// Text-renderer layout:
+    /// - "card" (default): auto-adaptive — landscape tri-column card on
+    ///   wide terminals, stacked single-column card on narrow ones.
+    /// - "stacked": force the stacked card layout regardless of terminal
+    ///   width. Same colour/icons/bars as the landscape card, sections
+    ///   just flow top-to-bottom.
+    /// - "plain": legacy single-column text, no box-drawing, no colour.
+    ///   Use when piping into other tools or sharing to quieter channels.
+    pub layout: String,
 }
 
 impl Default for OutputConfig {
@@ -109,6 +118,7 @@ impl Default for OutputConfig {
         Self {
             format: "text".to_string(),
             stats: "full".to_string(),
+            layout: "card".to_string(),
         }
     }
 }
@@ -127,6 +137,30 @@ impl StatsMode {
             "off" | "none" | "hide" | "false" => Self::Off,
             "summary" | "brief" | "terse" => Self::Summary,
             _ => Self::Full,
+        }
+    }
+}
+
+/// Text-renderer layout. Only affects `--format text` (JSON and markdown
+/// outputs are layout-independent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    /// Auto — landscape tri-column at ≥80 cols, stacked below. Default.
+    Card,
+    /// Force the stacked single-column card (same styling as landscape,
+    /// sections stacked vertically). Useful when you like the narrow look
+    /// on a wide terminal.
+    Stacked,
+    /// Legacy single-column plain text (no box-drawing, no colour).
+    Plain,
+}
+
+impl LayoutMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "plain" | "simple" | "legacy" | "classic" | "text" => Self::Plain,
+            "stacked" | "vertical" | "column" | "narrow" => Self::Stacked,
+            _ => Self::Card,
         }
     }
 }

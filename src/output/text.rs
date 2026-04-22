@@ -221,11 +221,7 @@ fn flow_tag(data: &StandupData) -> Option<String> {
             if s.state == "closed" {
                 Some(format!("{} (closed)", s.name))
             } else {
-                let day_word = if s.days_remaining == 1 { "d" } else { "d" };
-                Some(format!(
-                    "{} · {}{} left",
-                    s.name, s.days_remaining, day_word
-                ))
+                Some(format!("{} · {}d left", s.name, s.days_remaining))
             }
         }
         Some(Flow::Kanban(k)) => Some(format!("Kanban · {}d window", k.window_days)),
@@ -431,12 +427,8 @@ fn push_pr_block(
     rows.push(truncate(&head, width));
 
     // Line 2+: title (wrapped).
-    for (i, line) in wrap(&pr.title, width.saturating_sub(5))
-        .into_iter()
-        .enumerate()
-    {
-        let prefix = if i == 0 { "     " } else { "     " };
-        rows.push(format!("{}{}", prefix, line));
+    for line in wrap(&pr.title, width.saturating_sub(5)) {
+        rows.push(format!("     {}", line));
     }
 
     // Line last: meta (status / approvals / age).
@@ -506,7 +498,7 @@ fn build_sprint_column(
     width: usize,
 ) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
-    let bar_w = width.saturating_sub(5).min(22).max(10);
+    let bar_w = width.saturating_sub(5).clamp(10, 22);
 
     // Issues (always shown, even in Summary mode).
     let issues_pct = if s.issues_total > 0 {
@@ -1001,6 +993,28 @@ fn plain_cycle(label: &str, hours: Option<f64>) {
 
 // --- Duration formatter (shared with markdown renderer) ------------------
 
+pub fn fmt_duration(hours: f64) -> String {
+    if hours < 1.0 {
+        format!("{:.0}m", hours * 60.0)
+    } else if hours < 24.0 {
+        let h = hours.floor() as u64;
+        let m = ((hours - h as f64) * 60.0).round() as u64;
+        if m == 0 {
+            format!("{}h", h)
+        } else {
+            format!("{}h {}m", h, m)
+        }
+    } else {
+        let d = (hours / 24.0).floor() as u64;
+        let h = (hours - d as f64 * 24.0).round() as u64;
+        if h == 0 {
+            format!("{}d", d)
+        } else {
+            format!("{}d {}h", d, h)
+        }
+    }
+}
+
 #[cfg(test)]
 mod smoke {
     //! Visual smoke tests — run with `cargo test -- --nocapture` to eyeball
@@ -1179,27 +1193,5 @@ mod smoke {
         let theme = Theme::plain(70);
         println!("\n--- stacked card, stats=off (70 cols) ---");
         render_stacked(&data, StatsMode::Off, &theme);
-    }
-}
-
-pub fn fmt_duration(hours: f64) -> String {
-    if hours < 1.0 {
-        format!("{:.0}m", hours * 60.0)
-    } else if hours < 24.0 {
-        let h = hours.floor() as u64;
-        let m = ((hours - h as f64) * 60.0).round() as u64;
-        if m == 0 {
-            format!("{}h", h)
-        } else {
-            format!("{}h {}m", h, m)
-        }
-    } else {
-        let d = (hours / 24.0).floor() as u64;
-        let h = (hours - d as f64 * 24.0).round() as u64;
-        if h == 0 {
-            format!("{}d", d)
-        } else {
-            format!("{}d {}h", d, h)
-        }
     }
 }

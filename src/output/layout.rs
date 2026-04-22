@@ -92,9 +92,7 @@ pub fn truncate(s: &str, max: usize) -> String {
         w += cw;
     }
     out.push('…');
-    pad_right(&out, max)
-        .trim_end()
-        .to_string()
+    pad_right(&out, max).trim_end().to_string()
 }
 
 /// Wrap `text` into lines whose display width is ≤ `width`. Simple greedy

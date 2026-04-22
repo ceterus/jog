@@ -23,7 +23,10 @@
 
 use crate::comments::clean_comment;
 use crate::config::{LayoutMode, StatsMode};
-use crate::models::{Activity, BitbucketActivity, Flow, KanbanStats, PullRequest, SprintStats, StandupData, TodayIssue};
+use crate::models::{
+    Activity, BitbucketActivity, Flow, KanbanStats, PullRequest, SprintStats, StandupData,
+    TodayIssue,
+};
 use crate::output::layout::{display_width, hline, pad_right, truncate, wrap, zip_columns};
 use crate::output::theme::{bold, cyan, dim, green, red, yellow, Theme, STACKED_CUTOFF};
 
@@ -170,8 +173,7 @@ fn print_header(data: &StandupData, theme: &Theme, content_width: usize) {
         println!("{}{} {}{}", left_pad, title, h.repeat(fill), right_pad);
     } else {
         // "─ title " + fill dashes + " tag ─"
-        let fill = content_width
-            .saturating_sub(static_chrome + title_w + tag_w + 2);
+        let fill = content_width.saturating_sub(static_chrome + title_w + tag_w + 2);
         println!(
             "{}{} {} {}{}",
             left_pad,
@@ -184,7 +186,10 @@ fn print_header(data: &StandupData, theme: &Theme, content_width: usize) {
 
     // Middle row: "│ since … → …                          │"
     let inner = content_width.saturating_sub(2);
-    let body = format!(" {} · {} → {}", data.since_label, data.start_date, data.end_datetime);
+    let body = format!(
+        " {} · {} → {}",
+        data.since_label, data.start_date, data.end_datetime
+    );
     let padded = pad_right(&body, inner);
     println!("{}{}{}", ml, dim(&padded, theme), mr);
 
@@ -234,7 +239,10 @@ fn flow_header(flow: &Flow) -> String {
             if s.state == "closed" {
                 format!(" ▸ {} · closed", s.name)
             } else {
-                format!(" ▸ {} · {} / {} days", s.name, s.days_remaining, s.total_days)
+                format!(
+                    " ▸ {} · {} / {} days",
+                    s.name, s.days_remaining, s.total_days
+                )
             }
         }
         Flow::Kanban(k) => format!(" ▸ FLOW · last {} days", k.window_days),
@@ -260,7 +268,10 @@ fn build_activity_column(data: &StandupData, theme: &Theme, width: usize) -> Vec
         rows.push(indent(1));
         rows.push(format!(
             "   {}",
-            dim(&format!("No Jira activity since {}.", data.start_date), theme)
+            dim(
+                &format!("No Jira activity since {}.", data.start_date),
+                theme
+            )
         ));
     } else {
         let items: Vec<(&String, &Activity)> = data.activities.iter().collect();
@@ -276,7 +287,10 @@ fn build_activity_column(data: &StandupData, theme: &Theme, width: usize) -> Vec
     rows.push(String::new());
     let today_label = format!(" ▸ TODAY · {} tickets", data.today.len());
     rows.push(bold(&today_label, theme));
-    rows.push(dim(&format!(" {}", hline(width.saturating_sub(1), theme.unicode)), theme));
+    rows.push(dim(
+        &format!(" {}", hline(width.saturating_sub(1), theme.unicode)),
+        theme,
+    ));
     if data.today.is_empty() {
         rows.push(format!(
             "   {}",
@@ -302,7 +316,8 @@ fn push_activity_block(
     let status_lower = a.status.to_lowercase();
     let icon = if status_lower.contains("done") || status_lower.contains("closed") {
         icon_done
-    } else if status_lower.contains("to do") || status_lower == "open" || status_lower == "backlog" {
+    } else if status_lower.contains("to do") || status_lower == "open" || status_lower == "backlog"
+    {
         icon_todo
     } else {
         icon_in
@@ -350,11 +365,12 @@ fn push_activity_block(
 fn push_today_line(rows: &mut Vec<String>, t: &TodayIssue, theme: &Theme, width: usize) {
     let (icon_in, icon_todo, _done) = icons_ticket(theme);
     let status_lower = t.status.to_lowercase();
-    let icon = if status_lower.contains("to do") || status_lower == "open" || status_lower == "backlog" {
-        icon_todo
-    } else {
-        icon_in
-    };
+    let icon =
+        if status_lower.contains("to do") || status_lower == "open" || status_lower == "backlog" {
+            icon_todo
+        } else {
+            icon_in
+        };
     let prefix = format!("   {}  {}  ", icon, cyan(&t.key, theme));
     let prefix_w = display_width(&prefix);
     let summary_budget = width.saturating_sub(prefix_w);
@@ -388,7 +404,13 @@ fn build_pr_column(bb: &BitbucketActivity, theme: &Theme, width: usize) -> Vec<S
     rows
 }
 
-fn push_pr_block(rows: &mut Vec<String>, kind: &str, pr: &PullRequest, theme: &Theme, width: usize) {
+fn push_pr_block(
+    rows: &mut Vec<String>,
+    kind: &str,
+    pr: &PullRequest,
+    theme: &Theme,
+    width: usize,
+) {
     let (icon, icon_str) = match (kind, pr.state.as_str()) {
         ("opened", _) => ("opened", yellow(&symbol_pr_open(theme), theme)),
         ("completed", "MERGED") => ("merged", green(&symbol_pr_merged(theme), theme)),
@@ -409,7 +431,10 @@ fn push_pr_block(rows: &mut Vec<String>, kind: &str, pr: &PullRequest, theme: &T
     rows.push(truncate(&head, width));
 
     // Line 2+: title (wrapped).
-    for (i, line) in wrap(&pr.title, width.saturating_sub(5)).into_iter().enumerate() {
+    for (i, line) in wrap(&pr.title, width.saturating_sub(5))
+        .into_iter()
+        .enumerate()
+    {
         let prefix = if i == 0 { "     " } else { "     " };
         rows.push(format!("{}{}", prefix, line));
     }
@@ -428,7 +453,11 @@ fn pr_meta_line(kind: &str, pr: &PullRequest) -> String {
             let appr = if pr.approvals == 0 {
                 "0 reviews".to_string()
             } else {
-                format!("{} approval{}", pr.approvals, if pr.approvals == 1 { "" } else { "s" })
+                format!(
+                    "{} approval{}",
+                    pr.approvals,
+                    if pr.approvals == 1 { "" } else { "s" }
+                )
             };
             format!("opened · {}", appr)
         }
@@ -456,7 +485,9 @@ fn pr_meta_line(kind: &str, pr: &PullRequest) -> String {
 
 fn short_repo(repo: &str) -> String {
     // "workspace/repo-slug" → "repo-slug"
-    repo.rsplit_once('/').map(|(_, r)| r.to_string()).unwrap_or_else(|| repo.to_string())
+    repo.rsplit_once('/')
+        .map(|(_, r)| r.to_string())
+        .unwrap_or_else(|| repo.to_string())
 }
 
 // --- Column 3: stats / flow ----------------------------------------------
@@ -468,7 +499,12 @@ fn build_stats_column(flow: &Flow, stats: StatsMode, theme: &Theme, width: usize
     }
 }
 
-fn build_sprint_column(s: &SprintStats, stats: StatsMode, theme: &Theme, width: usize) -> Vec<String> {
+fn build_sprint_column(
+    s: &SprintStats,
+    stats: StatsMode,
+    theme: &Theme,
+    width: usize,
+) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
     let bar_w = width.saturating_sub(5).min(22).max(10);
 
@@ -490,7 +526,10 @@ fn build_sprint_column(s: &SprintStats, stats: StatsMode, theme: &Theme, width: 
     if stats == StatsMode::Summary {
         rows.push(String::new());
         let day_word = if s.days_remaining == 1 { "day" } else { "days" };
-        rows.push(dim(&format!("   {} {} remaining", s.days_remaining, day_word), theme));
+        rows.push(dim(
+            &format!("   {} {} remaining", s.days_remaining, day_word),
+            theme,
+        ));
         return rows;
     }
 
@@ -536,18 +575,35 @@ fn build_sprint_column(s: &SprintStats, stats: StatsMode, theme: &Theme, width: 
     rows
 }
 
-fn build_kanban_column(k: &KanbanStats, stats: StatsMode, theme: &Theme, width: usize) -> Vec<String> {
+fn build_kanban_column(
+    k: &KanbanStats,
+    stats: StatsMode,
+    theme: &Theme,
+    width: usize,
+) -> Vec<String> {
     let _ = width;
     let mut rows: Vec<String> = Vec::new();
-    rows.push(format!("   {}          {}", bold("WIP", theme), k.wip_total));
+    rows.push(format!(
+        "   {}          {}",
+        bold("WIP", theme),
+        k.wip_total
+    ));
     if !k.wip_by_status.is_empty() {
         for (status, n) in &k.wip_by_status {
-            rows.push(format!("     {}  {}", pad_right(status, 16), dim(&n.to_string(), theme)));
+            rows.push(format!(
+                "     {}  {}",
+                pad_right(status, 16),
+                dim(&n.to_string(), theme)
+            ));
         }
     }
 
     rows.push(String::new());
-    rows.push(format!("   {}   {} done", bold("Throughput", theme), k.throughput));
+    rows.push(format!(
+        "   {}   {} done",
+        bold("Throughput", theme),
+        k.throughput
+    ));
     if let Some(tpd) = k.throughput_per_day {
         rows.push(format!("   {}       {:.2}/day", dim("Per day", theme), tpd));
     }
@@ -582,7 +638,11 @@ fn progress_bar(frac: f64, width: usize, theme: &Theme) -> String {
     let filled = (frac * width as f64).round() as usize;
     let filled = filled.min(width);
     let empty = width - filled;
-    let (fc, ec) = if theme.unicode { ("█", "░") } else { ("#", "-") };
+    let (fc, ec) = if theme.unicode {
+        ("█", "░")
+    } else {
+        ("#", "-")
+    };
     let bar = format!("{}{}", fc.repeat(filled), ec.repeat(empty));
     // Color the filled portion green if near/over complete, yellow otherwise.
     let filled_str = if frac >= 0.9 {
@@ -607,52 +667,68 @@ fn fmt_points(p: f64) -> String {
 
 fn icons_ticket(theme: &Theme) -> (String, String, String) {
     if theme.unicode {
-        (
-            yellow("●", theme),
-            dim("○", theme),
-            green("✓", theme),
-        )
+        (yellow("●", theme), dim("○", theme), green("✓", theme))
     } else {
-        (
-            yellow("*", theme),
-            dim("o", theme),
-            green("v", theme),
-        )
+        (yellow("*", theme), dim("o", theme), green("v", theme))
     }
 }
 
 fn icons_pr(theme: &Theme) -> (String, String, String) {
     if theme.unicode {
-        (
-            yellow("↑", theme),
-            green("✓", theme),
-            yellow("⧖", theme),
-        )
+        (yellow("↑", theme), green("✓", theme), yellow("⧖", theme))
     } else {
         (yellow("^", theme), green("v", theme), yellow("?", theme))
     }
 }
 
 fn symbol_pr_open(theme: &Theme) -> String {
-    if theme.unicode { "↑".to_string() } else { "^".to_string() }
+    if theme.unicode {
+        "↑".to_string()
+    } else {
+        "^".to_string()
+    }
 }
 fn symbol_pr_merged(theme: &Theme) -> String {
-    if theme.unicode { "✓".to_string() } else { "v".to_string() }
+    if theme.unicode {
+        "✓".to_string()
+    } else {
+        "v".to_string()
+    }
 }
 fn symbol_pr_declined(theme: &Theme) -> String {
-    if theme.unicode { "✗".to_string() } else { "x".to_string() }
+    if theme.unicode {
+        "✗".to_string()
+    } else {
+        "x".to_string()
+    }
 }
 fn symbol_pr_wait(theme: &Theme) -> String {
-    if theme.unicode { "⧖".to_string() } else { "?".to_string() }
+    if theme.unicode {
+        "⧖".to_string()
+    } else {
+        "?".to_string()
+    }
 }
 fn symbol_transition(theme: &Theme) -> &'static str {
-    if theme.unicode { "→" } else { "->" }
+    if theme.unicode {
+        "→"
+    } else {
+        "->"
+    }
 }
 fn symbol_comment(theme: &Theme) -> &'static str {
-    if theme.unicode { "✎" } else { "~" }
+    if theme.unicode {
+        "✎"
+    } else {
+        "~"
+    }
 }
 fn symbol_field(theme: &Theme) -> &'static str {
-    if theme.unicode { "⊕" } else { "+" }
+    if theme.unicode {
+        "⊕"
+    } else {
+        "+"
+    }
 }
 
 fn indent(n: usize) -> String {

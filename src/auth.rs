@@ -59,7 +59,25 @@ fn whoami() -> String {
 /// workspace): user can leave blank to skip, or type `-` to clear a stored
 /// value.
 pub fn prompt_optional(label: &str, current: Option<&str>) -> Result<Option<String>> {
-    let display = current.unwrap_or("(skip)");
+    prompt_optional_inner(label, current, false)
+}
+
+/// Same contract as `prompt_optional` but masks the stored value when
+/// echoing it back in the `[...]` hint. Use for secrets like API tokens.
+pub fn prompt_optional_secret(label: &str, current: Option<&str>) -> Result<Option<String>> {
+    prompt_optional_inner(label, current, true)
+}
+
+fn prompt_optional_inner(
+    label: &str,
+    current: Option<&str>,
+    secret: bool,
+) -> Result<Option<String>> {
+    let display = match current {
+        Some(c) if secret => mask_secret(c),
+        Some(c) => c.to_string(),
+        None => "(skip)".to_string(),
+    };
     eprint!("{} [{}]: ", label, display);
     io::stderr().flush()?;
 
@@ -76,15 +94,19 @@ pub fn prompt_optional(label: &str, current: Option<&str>) -> Result<Option<Stri
     Ok(Some(input))
 }
 
+fn mask_secret(c: &str) -> String {
+    let n = c.len();
+    if n > 8 {
+        format!("{}...{}", &c[..4], &c[n - 4..])
+    } else {
+        "****".to_string()
+    }
+}
+
 pub fn prompt(label: &str, current: Option<&str>, secret: bool) -> Result<String> {
     if let Some(c) = current {
         let display = if secret {
-            let n = c.len();
-            if n > 8 {
-                format!("{}...{}", &c[..4], &c[n - 4..])
-            } else {
-                "****".to_string()
-            }
+            mask_secret(c)
         } else {
             c.to_string()
         };
@@ -153,7 +175,7 @@ pub fn run_setup() -> Result<()> {
     let cur_bb_projects = keychain_get(KEYCHAIN_SERVICE_BITBUCKET_PROJECTS);
 
     let ws = prompt_optional("Bitbucket workspace", cur_ws.as_deref())?;
-    let bb_token = prompt_optional(
+    let bb_token = prompt_optional_secret(
         "Bitbucket API token (blank to reuse main token)",
         cur_bb_token.as_deref(),
     )?;

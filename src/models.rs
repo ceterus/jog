@@ -18,8 +18,21 @@ pub struct Activity {
     pub status: String,
     pub transitions: Vec<String>,
     pub my_comments: Vec<String>,
-    pub updated_fields: Vec<String>,
+    /// Non-status field edits made during the window. Captured as
+    /// per-change rows (field + from + to) so renderers can show the
+    /// actual values, collapse repeated edits, and alias field names.
+    pub updated_fields: Vec<FieldChange>,
     pub assigned_to_me: bool,
+}
+
+/// One non-status field change pulled from a Jira changelog item.
+/// `from` / `to` are the `fromString` / `toString` values (empty string
+/// when Jira reports the change as a clear/set).
+#[derive(Serialize, Clone, Debug)]
+pub struct FieldChange {
+    pub field: String,
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -41,6 +54,10 @@ pub struct SprintStats {
     pub avg_qa_hours: Option<f64>,
     pub avg_todo_to_done_hours: Option<f64>,
     pub points_per_day: Option<f64>,
+    /// Issues resolved per day across the sprint, oldest-first, length =
+    /// `days_elapsed` (or `1` if the sprint just started). Powers the
+    /// sparkline row in the stats card.
+    pub done_per_day: Vec<u32>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -60,6 +77,9 @@ pub struct KanbanStats {
     pub avg_in_review_hours: Option<f64>,
     pub avg_qa_hours: Option<f64>,
     pub avg_todo_to_done_hours: Option<f64>,
+    /// Issues resolved per day across `window_days`, oldest-first.
+    /// Powers the sparkline row in the stats card.
+    pub done_per_day: Vec<u32>,
 }
 
 /// Which flow model applies to this user's work — sprint/scrum or kanban.
@@ -78,6 +98,31 @@ pub struct TodayIssue {
     pub status: String,
 }
 
+/// Derived review state for an OPEN PR. Completed PRs leave this as `None`.
+/// Precedence (highest wins): Draft > ChangesRequested > NeedsReply >
+/// ReadyToMerge > NeedsReview.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrStatus {
+    Draft,
+    ChangesRequested,
+    NeedsReply,
+    ReadyToMerge,
+    NeedsReview,
+}
+
+impl PrStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PrStatus::Draft => "DRAFT",
+            PrStatus::ChangesRequested => "CHANGES",
+            PrStatus::NeedsReply => "REPLY",
+            PrStatus::ReadyToMerge => "READY",
+            PrStatus::NeedsReview => "REVIEW",
+        }
+    }
+}
+
 /// A single Bitbucket pull request, normalised into what we need for
 /// standup output.
 #[derive(Serialize, Clone, Debug)]
@@ -92,6 +137,42 @@ pub struct PullRequest {
     pub created_on: String,
     pub updated_on: String,
     pub approvals: u64,
+    /// Count of participants with role=REVIEWER (includes those who haven't
+    /// approved yet). Not every workspace uses explicit reviewers, so this
+    /// can legitimately be 0.
+    pub reviewers: u64,
+    /// Top-level comment threads with no reply, excluding the PR author's
+    /// own top-level comments and outdated inline comments.
+    pub unreplied_comments: u64,
+    /// True if any participant has `state=changes_requested`.
+    pub changes_requested: bool,
+    /// True if the PR is in Bitbucket's draft state.
+    pub is_draft: bool,
+    /// Derived review state for OPEN PRs; `None` for MERGED/DECLINED.
+    pub status: Option<PrStatus>,
+}
+
+impl PullRequest {
+    /// Derive status from the already-populated review fields. Only
+    /// meaningful for OPEN PRs.
+    pub fn derive_status(&self) -> Option<PrStatus> {
+        if self.state != "OPEN" {
+            return None;
+        }
+        if self.is_draft {
+            return Some(PrStatus::Draft);
+        }
+        if self.changes_requested {
+            return Some(PrStatus::ChangesRequested);
+        }
+        if self.unreplied_comments > 0 {
+            return Some(PrStatus::NeedsReply);
+        }
+        if self.approvals > 0 {
+            return Some(PrStatus::ReadyToMerge);
+        }
+        Some(PrStatus::NeedsReview)
+    }
 }
 
 /// Bitbucket-shaped standup section. All three lists are pre-classified

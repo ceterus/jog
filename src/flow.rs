@@ -40,6 +40,35 @@ fn parse_datetime(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
         .or_else(|| chrono::DateTime::parse_from_rfc3339(s).ok())
 }
 
+/// Bucket `resolutiondate` timestamps into a daily count array, oldest-first,
+/// length = `days`. Any resolution older than `days - 1` days ago is dropped.
+/// Today's date is taken from `chrono::Local`.
+fn bucket_done_per_day(issues: &[Value], days: usize) -> Vec<u32> {
+    let mut buckets = vec![0u32; days.max(1)];
+    if days == 0 {
+        return buckets;
+    }
+    let today = Local::now().date_naive();
+    for issue in issues {
+        let resolved = issue
+            .get("fields")
+            .and_then(|f| f.get("resolutiondate"))
+            .and_then(|x| x.as_str())
+            .and_then(parse_datetime);
+        if let Some(resolved) = resolved {
+            let d = resolved.with_timezone(&Local).date_naive();
+            let delta = (today - d).num_days();
+            if delta < 0 || delta >= days as i64 {
+                continue;
+            }
+            // Oldest-first: index 0 = `days-1` days ago, last index = today.
+            let idx = (days as i64 - 1 - delta) as usize;
+            buckets[idx] += 1;
+        }
+    }
+    buckets
+}
+
 pub fn calc_status_durations(changelog: &Value) -> BTreeMap<String, f64> {
     let mut transitions: Vec<(chrono::DateTime<chrono::FixedOffset>, String, String)> = Vec::new();
 
@@ -362,6 +391,11 @@ async fn fetch_sprint_stats(
         }
     };
 
+    // Bucket completions per day across the elapsed portion of the sprint
+    // (clamped to at least 1 day so the sparkline always renders something).
+    let spark_len = (days_elapsed.max(1) as usize).min(total_days.max(1) as usize);
+    let done_per_day = bucket_done_per_day(&issues, spark_len);
+
     Ok(Some(SprintStats {
         name: sprint_name,
         state: state_for_output,
@@ -382,6 +416,7 @@ async fn fetch_sprint_stats(
         } else {
             None
         },
+        done_per_day,
     }))
 }
 
@@ -515,6 +550,8 @@ async fn fetch_kanban_stats(
         }
     };
 
+    let done_per_day = bucket_done_per_day(&thr_issues, KANBAN_WINDOW_DAYS as usize);
+
     Ok(KanbanStats {
         window_days: KANBAN_WINDOW_DAYS,
         wip_by_status,
@@ -530,6 +567,7 @@ async fn fetch_kanban_stats(
         avg_in_review_hours: avg(&in_review_hours),
         avg_qa_hours: avg(&qa_hours),
         avg_todo_to_done_hours: avg(&todo_to_done_hours),
+        done_per_day,
     })
 }
 

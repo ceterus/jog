@@ -228,39 +228,41 @@ of pretending nothing exists.
 │ Since Tue Apr 21 · 2026-04-21 → 2026-04-22 09:04                                                                    │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
- ▸ YESTERDAY · 4 tickets                     │  ▸ PULL REQUESTS                │  ▸ Sprint 42 · 3 / 14 days
- ─────────────────────────────────────────── │  ────────────────────────────── │  ─────────────────────────────────────
-   ✓  PROJ-388  OAuth refresh race condition │    ↑  !234  payments            │    Issues     7 / 11   64%
-     Done                                    │      Retry logic for webhook    │    ██████████████░░░░░░░░
-                                             │      failures                   │
-   ✓  PROJ-389  Idempotency keys on /charge  │      opened · 0 reviews         │    Points     18 / 28   64%
-     Done                                    │                                 │    ██████████████░░░░░░░░
-     → In Review → Done                      │    ✓  !228  payments            │
-                                             │      Idempotency keys on        │    Velocity   1.6 pt/d
-   ●  PROJ-401  Dashboard latency spike      │      /charge                    │    Need       3.3 pt/d
-     In Progress                             │      merged                     │
-     ⊕ description                           │                                 │    Cycle (avg, done)
-                                             │    ⧖  !231  dashboards          │      In Progress     8h
-   ●  PROJ-412  Refund webhook retry logic   │      Latency dashboard v2       │      In Review       3h
-     In Review                               │      awaiting · 0 approvals     │      QA              1h
-     → In Progress → In Review               │                                 │
-     ⊕ sprint, story_points                  │                                 │
-     ✎ "spec covers 409 but not 425 — added… │                                 │
+ ▸ YESTERDAY · 4 tickets                           │  ▸ PULL REQUESTS                          │  ▸ STATS
+ ───────────────────────────────────────────────── │  ──────────────────────────────────────── │  ─────────────────────
+   ✓  PROJ-388  OAuth refresh race condition       │    ↑  !234  payments [REVIEW]             │ Issues ·········· 7/11
+     █ Done                                        │      Retry logic for webhook failures     │ ███████████░░░░░░  64%
+                                                   │      opened · 0/2 approved                │ Points ········· 18/28
+   ✓  PROJ-389  Idempotency keys on /charge        │                                           │ ███████████░░░░░░  64%
+     ░ To Do  ░ In Progress  ░ In Review           │    ✓  !228  payments                      │ Pace ········ behind 5
+     ↩ ░ In Progress  █ Done                       │      Idempotency keys on /charge          │ Velocity ····· 1.6/day
+                                                   │      merged                               │ ──── Cycle (avg) ─────
+   ●  PROJ-401  Dashboard latency spike            │                                           │ Resolve ········ 2d 4h
+     █ In Progress                                 │    ⧖  !231  dashboards [REPLY]            │ Todo→Done ······ 1d 6h
+     ⊕ description: (updated)                      │      Latency dashboard v2                 │ Prog ·············· 8h
+                                                   │      awaiting · 0/1 approved · 2 unrepli… │ Rev ··············· 3h
+   ●  PROJ-412  Refund webhook retry logic         │                                           │ QA ················ 1h
+     ░ In Progress  █ In Review                    │                                           │
+     ⊕ points: 3 → 5  ·  + sprint: Sprint 42       │                                           │ ── Done / day (14d) ──
+     ✎ "spec covers 409 but not 425 — added test"  │                                           │          ▃ ▆▃█▃▆ ▃▆▃█▆
 
- ▸ TODAY · 2 tickets                         │                                 │
- ─────────────────────────────────────────── │                                 │
-   ●  PROJ-420  Backfill legacy accounts     │                                 │
-     In Progress                             │                                 │
-   ○  PROJ-425  Investigate 5xx in eu-west-1 │                                 │
-     To Do                                   │                                 │
+ ▸ TODAY · 2 tickets                               │                                           │
+ ───────────────────────────────────────────────── │                                           │
+   ●  PROJ-420  Backfill legacy accounts           │                                           │
+     In Progress                                   │                                           │
+   ○  PROJ-425  Investigate 5xx in eu-west-1       │                                           │
+     To Do                                         │                                           │
 
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ● in-flight   ○ todo   ✓ done      ↑ opened  ✓ merged  ⧖ waiting                                           jog v0.1.0
 ```
 
 In a real terminal, ticket keys (`PROJ-412`, `!234`) and progress bars
-render in cyan, `✓`/merged in green, `⧖`/behind-pace in yellow, and
-secondary metadata (dates, status, transitions) in dim grey.
+render in cyan, `✓`/merged/on-pace in green, `⧖`/`[REPLY]` in yellow,
+`[CHANGES]`/behind-pace in red, and secondary metadata (dots, leaders,
+status, field changes) in dim grey. Lane chips show every status the
+ticket visited — filled (`█`) is current, hollow (`░`) is past, `↩`
+marks a bounce back to a lane the ticket already visited.
 
 ### Stacked card (narrow terminals, or `jog --stacked`)
 
@@ -272,20 +274,18 @@ secondary metadata (dates, status, transitions) in dim grey.
  ▸ YESTERDAY · 4 tickets
  ────────────────────────────────────────────────────────────────────
    ✓  PROJ-388  OAuth refresh race condition
-     Done
+     █ Done
 
    ✓  PROJ-389  Idempotency keys on /charge
-     Done
-     → In Review → Done
+     ░ To Do  ░ In Progress  ░ In Review  ↩ ░ In Progress  █ Done
 
    ●  PROJ-401  Dashboard latency spike
-     In Progress
-     ⊕ description
+     █ In Progress
+     ⊕ description: (updated)
 
    ●  PROJ-412  Refund webhook retry logic
-     In Review
-     → In Progress → In Review
-     ⊕ sprint, story_points
+     ░ In Progress  █ In Review
+     ⊕ points: 3 → 5  ·  + sprint: Sprint 42
      ✎ "spec covers 409 but not 425 — added test"
 
  ▸ TODAY · 2 tickets
@@ -297,33 +297,34 @@ secondary metadata (dates, status, transitions) in dim grey.
 
  ▸ PULL REQUESTS
  ────────────────────────────────────────────────────────────────────
-   ↑  !234  payments
+   ↑  !234  payments [REVIEW]
      Retry logic for webhook failures
-     opened · 0 reviews
+     opened · 0/2 approved
 
    ✓  !228  payments
      Idempotency keys on /charge
      merged
 
-   ⧖  !231  dashboards
+   ⧖  !231  dashboards [REPLY]
      Latency dashboard v2
-     awaiting · 0 approvals
+     awaiting · 0/1 approved · 2 unreplied
 
- ▸ Sprint 42 · 3 / 14 days
+ ▸ STATS
  ────────────────────────────────────────────────────────────────────
-   Issues     7 / 11   64%
-   ██████████████░░░░░░░░
-
-   Points     18 / 28   64%
-   ██████████████░░░░░░░░
-
-   Velocity   1.6 pt/d
-   Need       3.3 pt/d
-
-   Cycle (avg, done)
-     In Progress     8h
-     In Review       3h
-     QA              1h
+Issues ························································· 7/11
+█████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░  64%
+Points ························································ 18/28
+█████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░  64%
+Pace ······················································· behind 5
+Velocity ···················································· 1.6/day
+──────────────────────────── Cycle (avg) ────────────────────────────
+Resolve ······················································· 2d 4h
+Todo→Done ····················································· 1d 6h
+Prog ····························································· 8h
+Rev ······························································ 3h
+QA ······························································· 1h
+───────────────────────── Done / day (14d) ──────────────────────────
+                                                        ▃ ▆▃█▃▆ ▃▆▃█▆
 ```
 
 ### Plain (`jog --plain`)
@@ -336,12 +337,15 @@ secondary metadata (dates, status, transitions) in dim grey.
 Since Tue Apr 21 (2026-04-21 → now):
   • [PROJ-388] OAuth refresh race condition (status: Done)
   • [PROJ-389] Idempotency keys on /charge (status: Done)
-      - transitioned: In Review → Done
+      - transitioned: To Do → In Progress
+      - transitioned: In Progress → In Review
+      - transitioned: In Review → In Progress
+      - transitioned: In Progress → Done
   • [PROJ-401] Dashboard latency spike (status: In Progress)
-      - updated: description
+      - updated: description: (updated)
   • [PROJ-412] Refund webhook retry logic (status: In Review)
       - transitioned: In Progress → In Review
-      - updated: sprint, story_points
+      - updated: points: 3 → 5 · + sprint: Sprint 42
       - commented: "spec covers 409 but not 425 — added test"
 
 Today:
@@ -350,11 +354,11 @@ Today:
 
 Bitbucket:
   Opened:
-    • !234 [team/payments] Retry logic for webhook failures (no approvals yet)
+    • [REVIEW] !234 [team/payments] Retry logic for webhook failures (0/2 approved)
   Merged:
     • !228 [team/payments] Idempotency keys on /charge
   Awaiting approval:
-    • !231 [team/dashboards] Latency dashboard v2 (no approvals yet)
+    • [REPLY] !231 [team/dashboards] Latency dashboard v2 (0/1 approved · 2 unreplied)
 
 Sprint:
   Sprint 42 (3 days left of 14)

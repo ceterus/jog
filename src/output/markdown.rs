@@ -16,10 +16,12 @@ pub fn render(data: &StandupData, stats: StatsMode) {
                 println!("  - transitioned: {}", t);
             }
             if !a.updated_fields.is_empty() {
-                let mut f = a.updated_fields.clone();
-                f.sort();
-                f.dedup();
-                println!("  - updated: {}", f.join(", "));
+                let f: Vec<String> = a
+                    .updated_fields
+                    .iter()
+                    .map(crate::output::text::format_field_change_public)
+                    .collect();
+                println!("  - updated: {}", f.join(" · "));
             }
             for c in &a.my_comments {
                 if let Some(clean) = clean_comment(c) {
@@ -89,30 +91,41 @@ fn render_bitbucket(bb: &BitbucketActivity) {
 }
 
 fn print_pr(pr: &PullRequest) {
-    let approvals_note = if pr.state == "OPEN" {
-        if pr.approvals == 0 {
-            " _(no approvals yet)_".to_string()
-        } else {
-            format!(
-                " _({} approval{})_",
-                pr.approvals,
-                if pr.approvals == 1 { "" } else { "s" }
-            )
-        }
+    let badge = pr
+        .status
+        .as_ref()
+        .map(|s| format!("`[{}]` ", s.label()))
+        .unwrap_or_default();
+    let note = if pr.state == "OPEN" {
+        format!(" _({})_", review_summary_md(pr))
     } else {
         String::new()
     };
     if pr.url.is_empty() {
         println!(
-            "- !{} **[{}]** {}{}",
-            pr.id, pr.repo, pr.title, approvals_note
+            "- {}!{} **[{}]** {}{}",
+            badge, pr.id, pr.repo, pr.title, note
         );
     } else {
         println!(
-            "- [!{}]({}) **[{}]** {}{}",
-            pr.id, pr.url, pr.repo, pr.title, approvals_note
+            "- {}[!{}]({}) **[{}]** {}{}",
+            badge, pr.id, pr.url, pr.repo, pr.title, note
         );
     }
+}
+
+fn review_summary_md(pr: &PullRequest) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if pr.reviewers > 0 {
+        parts.push(format!("{}/{} approved", pr.approvals, pr.reviewers));
+    } else {
+        let suffix = if pr.approvals == 1 { "" } else { "s" };
+        parts.push(format!("{} approval{}", pr.approvals, suffix));
+    }
+    if pr.unreplied_comments > 0 {
+        parts.push(format!("{} unreplied", pr.unreplied_comments));
+    }
+    parts.join(" · ")
 }
 
 fn render_sprint(s: &SprintStats, stats: StatsMode) {

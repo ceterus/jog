@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use crate::comments::{adf_to_text, comments_on};
 use crate::config::Credentials;
-use crate::models::{Activity, Myself, StandupData};
+use crate::models::{Activity, FieldChange, Myself, StandupData};
 
 #[derive(Parser, Debug)]
 #[command(about = "Jira standup summary for previous work day")]
@@ -108,6 +108,31 @@ fn datetime_from_iso(s: &str) -> Option<DateTime<Local>> {
                 .ok()
                 .map(|dt| dt.with_timezone(&Local))
         })
+}
+
+/// Drop excluded fields and collapse repeated edits of the same field
+/// into a single `first from → last to` row. `exclude` is matched
+/// case-insensitively against the raw Jira field name.
+fn collapse_field_changes(changes: &[FieldChange], exclude: &[String]) -> Vec<FieldChange> {
+    let mut out: Vec<FieldChange> = Vec::new();
+    'outer: for c in changes {
+        for ex in exclude {
+            if c.field.eq_ignore_ascii_case(ex.trim()) {
+                continue 'outer;
+            }
+        }
+        if let Some(existing) = out
+            .iter_mut()
+            .find(|e| e.field.eq_ignore_ascii_case(&c.field))
+        {
+            // Preserve the first `from` (start of the window), but roll
+            // the `to` forward to the most recent value.
+            existing.to = c.to.clone();
+        } else {
+            out.push(c.clone());
+        }
+    }
+    out
 }
 
 fn in_range(s: &str, start: DateTime<Local>, end: DateTime<Local>) -> bool {
@@ -214,6 +239,17 @@ async fn main() -> Result<()> {
             .and_then(|x| x.get("histories"))
             .and_then(|x| x.as_array())
         {
+            // Jira's changelog ordering isn't guaranteed across API
+            // versions — sort ascending by `created` so downstream renderers
+            // (specifically the lane-chip chain) see transitions in the
+            // order they actually happened.
+            let mut histories: Vec<&Value> = histories.iter().collect();
+            histories.sort_by_key(|h| {
+                h.get("created")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            });
             for h in histories {
                 let author_id = h
                     .get("author")
@@ -235,7 +271,11 @@ async fn main() -> Result<()> {
                         if field == "status" {
                             act.transitions.push(format!("{} → {}", from, to));
                         } else if !field.is_empty() {
-                            act.updated_fields.push(field.to_string());
+                            act.updated_fields.push(FieldChange {
+                                field: field.to_string(),
+                                from: from.to_string(),
+                                to: to.to_string(),
+                            });
                         }
                     }
                 }
@@ -262,6 +302,12 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
+        // Drop configured-noise fields (e.g. Rank) and collapse repeated
+        // edits of the same field within the window down to a single
+        // first-from → last-to row so the UI doesn't list the same field
+        // three times.
+        act.updated_fields = collapse_field_changes(&act.updated_fields, &app_cfg.fields.exclude);
 
         let has_signal = !act.transitions.is_empty()
             || !act.my_comments.is_empty()
@@ -384,6 +430,50 @@ mod tests {
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    // ── collapse_field_changes ───────────────────────────────────────────
+
+    fn fc(field: &str, from: &str, to: &str) -> FieldChange {
+        FieldChange {
+            field: field.into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn collapse_drops_excluded_case_insensitive() {
+        let input = vec![fc("Rank", "a", "b"), fc("Sprint", "", "S42")];
+        let out = collapse_field_changes(&input, &["rank".into()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].field, "Sprint");
+    }
+
+    #[test]
+    fn collapse_merges_repeat_edits_to_same_field() {
+        let input = vec![
+            fc("Story point estimate", "3", "5"),
+            fc("Story point estimate", "5", "8"),
+        ];
+        let out = collapse_field_changes(&input, &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].from, "3");
+        assert_eq!(out[0].to, "8");
+    }
+
+    #[test]
+    fn collapse_preserves_insertion_order() {
+        let input = vec![
+            fc("Sprint", "", "S1"),
+            fc("Priority", "High", "Low"),
+            fc("Sprint", "S1", "S2"),
+        ];
+        let out = collapse_field_changes(&input, &[]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].field, "Sprint");
+        assert_eq!(out[0].to, "S2");
+        assert_eq!(out[1].field, "Priority");
     }
 
     #[test]

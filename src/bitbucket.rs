@@ -8,6 +8,20 @@ use std::time::Duration;
 
 use crate::models::{BitbucketActivity, PullRequest};
 
+/// Aggregated review info extracted from a PR's `participants[]` array.
+#[derive(Default, Debug, Clone, Copy)]
+struct ReviewInfo {
+    approvals: u64,
+    reviewers: u64,
+    changes_requested: bool,
+}
+
+/// Aggregated comment-thread info for one PR.
+#[derive(Default, Debug, Clone, Copy)]
+struct CommentInfo {
+    unreplied: u64,
+}
+
 /// Bitbucket Cloud accepts the same Atlassian API token as Jira via Basic
 /// auth (`email:token`). `token` may be either the main jog token (if it's
 /// scoped broadly enough) or a separate Bitbucket-scoped API token.
@@ -104,7 +118,8 @@ pub async fn fetch_activity(
             // ProgressBar is internally Arc-backed; cloning is cheap.
             let pb = pb.clone();
             async move {
-                let r = fetch_repo_prs(client, creds, &repo_slug, &uuid, start, debug).await;
+                let r = fetch_repo_prs_with_reviews(client, creds, &repo_slug, &uuid, start, debug)
+                    .await;
                 if let Some(pb) = pb {
                     pb.inc(1);
                 }
@@ -326,6 +341,221 @@ async fn fetch_repo_prs(
     Ok(out)
 }
 
+/// Wrap `fetch_repo_prs` and enrich each OPEN PR with comment-thread info.
+/// Completed PRs (MERGED/DECLINED) skip the extra call — their status
+/// badge is not rendered.
+async fn fetch_repo_prs_with_reviews(
+    client: &Client,
+    creds: &BitbucketCredentials,
+    repo_slug: &str,
+    uuid: &str,
+    start: DateTime<Local>,
+    debug: bool,
+) -> Result<Vec<PullRequest>> {
+    let mut prs = fetch_repo_prs(client, creds, repo_slug, uuid, start, debug).await?;
+    // OPEN PRs need two enrichment calls:
+    //   1. PR detail — the list endpoint's `participants[]` is often stale
+    //      or missing the `approved`/`state` flags, so re-fetch per PR.
+    //   2. Comments — for the unreplied-thread tally.
+    // Completed PRs (MERGED/DECLINED) skip both — they show no status badge.
+    let open_indices: Vec<usize> = prs
+        .iter()
+        .enumerate()
+        .filter(|(_, pr)| pr.state == "OPEN")
+        .map(|(i, _)| i)
+        .collect();
+    let enrichments = stream::iter(open_indices.iter().cloned())
+        .map(|i| {
+            let pr_id = prs[i].id;
+            async move {
+                let review = fetch_pr_review_info(client, creds, repo_slug, pr_id, debug)
+                    .await
+                    .unwrap_or_default();
+                let comments = fetch_pr_comments(client, creds, repo_slug, pr_id, uuid, debug)
+                    .await
+                    .unwrap_or_default();
+                (i, review, comments)
+            }
+        })
+        .buffer_unordered(CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    for (i, review, comments) in enrichments {
+        prs[i].approvals = review.approvals;
+        prs[i].reviewers = review.reviewers;
+        prs[i].changes_requested = review.changes_requested;
+        prs[i].unreplied_comments = comments.unreplied;
+        prs[i].status = prs[i].derive_status();
+    }
+    Ok(prs)
+}
+
+/// Fetch a single PR's detail and re-extract review info. Works around
+/// the list endpoint's stale/incomplete `participants[]` payload.
+async fn fetch_pr_review_info(
+    client: &Client,
+    creds: &BitbucketCredentials,
+    repo_slug: &str,
+    pr_id: u64,
+    debug: bool,
+) -> Result<ReviewInfo> {
+    let url = format!(
+        "{API_BASE}/repositories/{ws}/{repo}/pullrequests/{pr_id}",
+        ws = urlencoding::encode(&creds.workspace),
+        repo = urlencoding::encode(repo_slug),
+    );
+    let v: Value = client
+        .get(&url)
+        .header("Authorization", creds.auth_header())
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .context("bitbucket pr detail GET")?
+        .error_for_status()
+        .context("bitbucket pr detail status")?
+        .json()
+        .await
+        .context("bitbucket pr detail body")?;
+    let info = extract_review_info(&v);
+    if debug {
+        eprintln!(
+            "[debug] bitbucket: {} PR {} detail → {}/{} approved, changes_requested={}",
+            repo_slug, pr_id, info.approvals, info.reviewers, info.changes_requested
+        );
+    }
+    Ok(info)
+}
+
+/// Fetch and tally comment threads on one PR. Counts top-level threads
+/// that: (a) weren't posted by the PR author (our current user), (b) have
+/// no reply of any kind, (c) aren't deleted, and (d) for inline comments,
+/// aren't marked outdated.
+async fn fetch_pr_comments(
+    client: &Client,
+    creds: &BitbucketCredentials,
+    repo_slug: &str,
+    pr_id: u64,
+    author_uuid: &str,
+    debug: bool,
+) -> Result<CommentInfo> {
+    let base = format!(
+        "{API_BASE}/repositories/{ws}/{repo}/pullrequests/{pr_id}/comments?pagelen=100",
+        ws = urlencoding::encode(&creds.workspace),
+        repo = urlencoding::encode(repo_slug),
+    );
+    let mut next_url = Some(base);
+    let mut all: Vec<Value> = Vec::new();
+    let mut pages = 0u32;
+    while let Some(u) = next_url {
+        pages += 1;
+        if pages > MAX_PAGES {
+            if debug {
+                eprintln!(
+                    "[debug] bitbucket: hit MAX_PAGES on {} PR {} comments",
+                    repo_slug, pr_id
+                );
+            }
+            break;
+        }
+        let v: Value = client
+            .get(&u)
+            .header("Authorization", creds.auth_header())
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("bitbucket pr comments GET")?
+            .error_for_status()
+            .context("bitbucket pr comments status")?
+            .json()
+            .await
+            .context("bitbucket pr comments body")?;
+        if let Some(values) = v.get("values").and_then(|x| x.as_array()) {
+            all.extend(values.iter().cloned());
+        }
+        next_url = v
+            .get("next")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+    }
+    Ok(tally_unreplied(&all, author_uuid))
+}
+
+/// Pure tally over a flat comment list. Factored out so we can unit-test
+/// the thread/author/outdated logic without a live API.
+fn tally_unreplied(comments: &[Value], author_uuid: &str) -> CommentInfo {
+    use std::collections::HashSet;
+    // Set of parent IDs that have at least one reply.
+    let mut parents_with_replies: HashSet<u64> = HashSet::new();
+    for c in comments {
+        if let Some(parent_id) = c
+            .get("parent")
+            .and_then(|p| p.get("id"))
+            .and_then(|x| x.as_u64())
+        {
+            parents_with_replies.insert(parent_id);
+        }
+    }
+    let mut unreplied = 0u64;
+    for c in comments {
+        // Skip replies — we only count top-level threads.
+        if c.get("parent").and_then(|p| p.get("id")).is_some() {
+            continue;
+        }
+        if c.get("deleted").and_then(|x| x.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        // Author's own top-level comments don't count.
+        let user_uuid = c
+            .get("user")
+            .and_then(|u| u.get("uuid"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if user_uuid == author_uuid {
+            continue;
+        }
+        // Inline comment marked outdated — author fixed the code referenced.
+        let outdated = c
+            .get("inline")
+            .and_then(|i| i.get("outdated"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        if outdated {
+            continue;
+        }
+        let id = match c.get("id").and_then(|x| x.as_u64()) {
+            Some(i) => i,
+            None => continue,
+        };
+        if parents_with_replies.contains(&id) {
+            continue;
+        }
+        unreplied += 1;
+    }
+    CommentInfo { unreplied }
+}
+
+/// Inspect `participants[]` for approvals, reviewer role count, and any
+/// `state=changes_requested` flag.
+fn extract_review_info(pr: &Value) -> ReviewInfo {
+    let parts = match pr.get("participants").and_then(|x| x.as_array()) {
+        Some(p) => p,
+        None => return ReviewInfo::default(),
+    };
+    let mut info = ReviewInfo::default();
+    for p in parts {
+        if p.get("approved").and_then(|x| x.as_bool()).unwrap_or(false) {
+            info.approvals += 1;
+        }
+        if p.get("role").and_then(|x| x.as_str()) == Some("REVIEWER") {
+            info.reviewers += 1;
+        }
+        if p.get("state").and_then(|x| x.as_str()) == Some("changes_requested") {
+            info.changes_requested = true;
+        }
+    }
+    info
+}
+
 /// Parse one PR JSON object into our model, filtering to the target workspace.
 fn parse_pr(pr: &Value, workspace: &str) -> Option<PullRequest> {
     // Destination repo full_name is "workspace/repo-slug".
@@ -367,18 +597,10 @@ fn parse_pr(pr: &Value, workspace: &str) -> Option<PullRequest> {
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
-    let approvals = pr
-        .get("participants")
-        .and_then(|x| x.as_array())
-        .map(|parts| {
-            parts
-                .iter()
-                .filter(|p| p.get("approved").and_then(|x| x.as_bool()).unwrap_or(false))
-                .count() as u64
-        })
-        .unwrap_or(0);
+    let review = extract_review_info(pr);
+    let is_draft = pr.get("draft").and_then(|x| x.as_bool()).unwrap_or(false);
 
-    Some(PullRequest {
+    let mut out = PullRequest {
         id,
         title,
         repo,
@@ -386,8 +608,17 @@ fn parse_pr(pr: &Value, workspace: &str) -> Option<PullRequest> {
         url,
         created_on,
         updated_on,
-        approvals,
-    })
+        approvals: review.approvals,
+        reviewers: review.reviewers,
+        unreplied_comments: 0,
+        changes_requested: review.changes_requested,
+        is_draft,
+        status: None,
+    };
+    // Set initial status from what we know here; it's refined after the
+    // comments fetch populates `unreplied_comments`.
+    out.status = out.derive_status();
+    Some(out)
 }
 
 /// Split a raw PR list into the three standup buckets. See
@@ -442,7 +673,7 @@ mod tests {
     use serde_json::json;
 
     fn pr(state: &str, created_on: &str, approvals: u64) -> PullRequest {
-        PullRequest {
+        let mut p = PullRequest {
             id: 1,
             title: "t".into(),
             repo: "org/repo".into(),
@@ -451,7 +682,14 @@ mod tests {
             created_on: created_on.into(),
             updated_on: created_on.into(),
             approvals,
-        }
+            reviewers: 0,
+            unreplied_comments: 0,
+            changes_requested: false,
+            is_draft: false,
+            status: None,
+        };
+        p.status = p.derive_status();
+        p
     }
 
     fn window_start() -> DateTime<Local> {
@@ -547,5 +785,104 @@ mod tests {
     #[test]
     fn activity_is_empty_when_no_prs() {
         assert!(BitbucketActivity::default().is_empty());
+    }
+
+    #[test]
+    fn parse_pr_extracts_reviewers_and_changes_requested() {
+        let body = json!({
+            "id": 7,
+            "title": "t",
+            "state": "OPEN",
+            "created_on": "2026-04-14T12:00:00+00:00",
+            "updated_on": "2026-04-14T12:00:00+00:00",
+            "draft": false,
+            "destination": {"repository": {"full_name": "myorg/api"}},
+            "links": {"html": {"href": "https://bitbucket.org/myorg/api/pull-requests/7"}},
+            "participants": [
+                {"role": "REVIEWER", "approved": true, "state": "approved"},
+                {"role": "REVIEWER", "approved": false, "state": "changes_requested"},
+                {"role": "REVIEWER", "approved": false, "state": null},
+                {"role": "PARTICIPANT", "approved": false, "state": null},
+            ],
+        });
+        let p = parse_pr(&body, "myorg").unwrap();
+        assert_eq!(p.approvals, 1);
+        assert_eq!(p.reviewers, 3);
+        assert!(p.changes_requested);
+        assert_eq!(p.status, Some(crate::models::PrStatus::ChangesRequested));
+    }
+
+    #[test]
+    fn parse_pr_detects_draft() {
+        let body = json!({
+            "id": 8,
+            "title": "t",
+            "state": "OPEN",
+            "created_on": "2026-04-14T12:00:00+00:00",
+            "updated_on": "2026-04-14T12:00:00+00:00",
+            "draft": true,
+            "destination": {"repository": {"full_name": "myorg/api"}},
+            "links": {"html": {"href": "x"}},
+            "participants": [
+                {"role": "REVIEWER", "approved": false, "state": "changes_requested"},
+            ],
+        });
+        let p = parse_pr(&body, "myorg").unwrap();
+        // Draft trumps changes_requested.
+        assert_eq!(p.status, Some(crate::models::PrStatus::Draft));
+    }
+
+    #[test]
+    fn status_ready_when_approved_and_no_unreplied() {
+        let mut p = pr("OPEN", "2026-04-14T12:00:00+00:00", 1);
+        p.unreplied_comments = 0;
+        p.status = p.derive_status();
+        assert_eq!(p.status, Some(crate::models::PrStatus::ReadyToMerge));
+    }
+
+    #[test]
+    fn status_needs_reply_beats_ready() {
+        let mut p = pr("OPEN", "2026-04-14T12:00:00+00:00", 2);
+        p.unreplied_comments = 1;
+        p.status = p.derive_status();
+        assert_eq!(p.status, Some(crate::models::PrStatus::NeedsReply));
+    }
+
+    #[test]
+    fn status_needs_review_default() {
+        let p = pr("OPEN", "2026-04-14T12:00:00+00:00", 0);
+        assert_eq!(p.status, Some(crate::models::PrStatus::NeedsReview));
+    }
+
+    #[test]
+    fn status_none_for_completed() {
+        let p = pr("MERGED", "2026-04-14T12:00:00+00:00", 2);
+        assert!(p.status.is_none());
+    }
+
+    #[test]
+    fn tally_unreplied_counts_only_top_level_threads_without_replies() {
+        let comments = vec![
+            // Top-level by someone else, no reply → counts.
+            json!({"id": 1, "user": {"uuid": "{other}"}}),
+            // Top-level by someone else, has reply → doesn't count.
+            json!({"id": 2, "user": {"uuid": "{other}"}}),
+            json!({"id": 3, "parent": {"id": 2}, "user": {"uuid": "{me}"}}),
+            // Top-level by author → excluded.
+            json!({"id": 4, "user": {"uuid": "{me}"}}),
+            // Top-level by other, deleted → excluded.
+            json!({"id": 5, "user": {"uuid": "{other}"}, "deleted": true}),
+            // Top-level inline outdated → excluded.
+            json!({"id": 6, "user": {"uuid": "{other}"}, "inline": {"outdated": true, "path": "a"}}),
+            // Top-level inline not outdated → counts.
+            json!({"id": 7, "user": {"uuid": "{other}"}, "inline": {"outdated": false, "path": "a"}}),
+        ];
+        let info = tally_unreplied(&comments, "{me}");
+        assert_eq!(info.unreplied, 2);
+    }
+
+    #[test]
+    fn tally_unreplied_empty_on_no_comments() {
+        assert_eq!(tally_unreplied(&[], "{me}").unreplied, 0);
     }
 }

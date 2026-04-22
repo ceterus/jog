@@ -44,6 +44,11 @@ impl Default for JiraConfig {
 pub struct FieldsConfig {
     pub story_points: String,
     pub sprint: String,
+    /// Field names to hide from the "updated fields" row in ticket cards.
+    /// Matched case-insensitively against Jira's `field` value (or its
+    /// rendered alias). `Rank` is excluded by default because it carries
+    /// an opaque LexoRank string with no human meaning.
+    pub exclude: Vec<String>,
 }
 
 impl Default for FieldsConfig {
@@ -51,6 +56,7 @@ impl Default for FieldsConfig {
         Self {
             story_points: "customfield_10047".to_string(),
             sprint: "customfield_10010".to_string(),
+            exclude: vec!["Rank".to_string()],
         }
     }
 }

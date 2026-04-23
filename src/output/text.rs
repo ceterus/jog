@@ -24,8 +24,8 @@
 use crate::comments::clean_comment;
 use crate::config::{LayoutMode, StatsMode};
 use crate::models::{
-    Activity, BitbucketActivity, FieldChange, Flow, KanbanStats, PrStatus, PullRequest,
-    SprintStats, StandupData, TodayIssue,
+    Activity, BitbucketActivity, Burndown, FieldChange, Flow, KanbanStats, PrStatus, PullRequest,
+    ScopeChangeKind, SprintStats, StandupData, TodayIssue,
 };
 use crate::output::layout::{display_width, hline, pad_right, truncate, wrap, zip_columns};
 use crate::output::theme::{bold, cyan, dim, green, red, yellow, Theme, STACKED_CUTOFF};
@@ -769,6 +769,10 @@ fn build_sprint_column(
         ));
     }
 
+    if let Some(b) = s.burndown.as_ref() {
+        push_burndown_section(&mut rows, b, width, theme);
+    }
+
     // Cycle sub-section.
     rows.push(sub_divider("Cycle (avg)", width, theme));
     rows.push(ledger_row_opt(
@@ -811,6 +815,156 @@ fn build_sprint_column(
     );
 
     rows
+}
+
+/// Append the burndown section: sub-divider, `Remain` sparkline across
+/// elapsed + projected days, an optional scope-change marker row, and a
+/// trailing footer line summarising scope deltas. Rows are only emitted
+/// when the column is wide enough to stay legible.
+fn push_burndown_section(rows: &mut Vec<String>, b: &Burndown, width: usize, theme: &Theme) {
+    if width < 16 || b.series.len() < 2 {
+        return;
+    }
+    // Concatenate actual + projected for the full sprint view.
+    let mut full: Vec<f64> = b.series.clone();
+    full.extend(b.projection.iter().copied());
+    let current = *b.series.last().unwrap_or(&0.0);
+    let label_val = format!("{} pts", fmt_points(current));
+
+    // The sub-divider already labels this section "Burndown" — skip a
+    // row-level "Remain" label and give the sparkline all the cells
+    // the column can spare. Keeps the trailing `N pts` value for the
+    // anchor number.
+    let value_w = display_width(&label_val) + 1; // +1 for leading space
+    let spark_cells = width.saturating_sub(value_w).max(4);
+    // today_idx within `full` is the last actual cell (past is left of
+    // it, future is right). Renderer dims the future half and
+    // highlights today so halfway-through sprints are legible at a
+    // glance.
+    let today_idx = b.series.len().saturating_sub(1);
+    let (spark, used_cells) = sparkline_f64(&full, spark_cells, theme, Some(today_idx));
+    let pad = width.saturating_sub(value_w + used_cells);
+
+    rows.push(sub_divider("Burndown", width, theme));
+    rows.push(format!(
+        "{}{} {}",
+        spark,
+        " ".repeat(pad),
+        dim(&label_val, theme),
+    ));
+
+    if !b.scope_changes.is_empty() {
+        // Scope-change marker row, aligned under the same spark cells.
+        // Cells map 1:1 to sprint days (1-indexed); trim oldest first.
+        let total_days = full.len();
+        let first_day = total_days.saturating_sub(used_cells) + 1;
+        let mut markers = vec![' '; used_cells];
+        let mut added_total = 0.0_f64;
+        let mut removed_total = 0.0_f64;
+        let mut add_count = 0usize;
+        let mut rem_count = 0usize;
+        for sc in &b.scope_changes {
+            if sc.delta_pts >= 0.0 {
+                added_total += sc.delta_pts;
+                add_count += 1;
+            } else {
+                removed_total += sc.delta_pts;
+                rem_count += 1;
+            }
+            if sc.day >= first_day && sc.day < first_day + used_cells {
+                let idx = sc.day - first_day;
+                let glyph = match sc.kind {
+                    ScopeChangeKind::Added => '▲',
+                    ScopeChangeKind::Removed => '▼',
+                    ScopeChangeKind::Repointed => {
+                        if sc.delta_pts >= 0.0 {
+                            '▲'
+                        } else {
+                            '▼'
+                        }
+                    }
+                };
+                // Last writer wins if two changes on the same day.
+                markers[idx] = if theme.unicode { glyph } else { '*' };
+            }
+        }
+        let marker_row: String = markers.iter().collect();
+        rows.push(yellow(&marker_row, theme));
+
+        let mut parts: Vec<String> = Vec::new();
+        if add_count > 0 {
+            parts.push(format!(
+                "{} add{} ·{:+.0}",
+                add_count,
+                if add_count == 1 { "" } else { "s" },
+                added_total,
+            ));
+        }
+        if rem_count > 0 {
+            parts.push(format!(
+                "{} rem{} ·{:+.0}",
+                rem_count,
+                if rem_count == 1 { "" } else { "s" },
+                removed_total,
+            ));
+        }
+        if !parts.is_empty() {
+            let footer = parts.join(" · ");
+            let fw = display_width(&footer);
+            let pad = width.saturating_sub(fw);
+            rows.push(format!("{}{}", " ".repeat(pad), dim(&footer, theme)));
+        }
+    }
+}
+
+/// Float sparkline variant with optional today-index styling.
+///
+/// Returns `(rendered, cells_used)`. When `today_in_full` is `Some(i)`,
+/// cells left of `i` render as past (cyan), cell `i` as today
+/// (bold yellow), cells right of `i` as future (dim). Without it, the
+/// whole series renders as cyan. Trims oldest values when the series
+/// overflows `width` so "today" always stays visible.
+fn sparkline_f64(
+    series: &[f64],
+    width: usize,
+    theme: &Theme,
+    today_in_full: Option<usize>,
+) -> (String, usize) {
+    let sparks: &[&str] = if theme.unicode {
+        &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    } else {
+        &[".", ":", "-", "=", "+", "*", "#", "@"]
+    };
+    let take = series.len().min(width);
+    if take == 0 {
+        return (String::new(), 0);
+    }
+    let start = series.len() - take;
+    let slice = &series[start..];
+    let max = slice.iter().cloned().fold(0.0_f64, f64::max);
+
+    // Translate `today_in_full` (index into the pre-trim `series`) into
+    // the trimmed slice. `None` if today has scrolled off the left.
+    let today_local = today_in_full.and_then(|t| if t >= start { Some(t - start) } else { None });
+
+    let mut out = String::new();
+    for (i, &v) in slice.iter().enumerate() {
+        let glyph = if v <= 0.0 || max <= 0.0 {
+            " ".to_string()
+        } else {
+            let idx = ((v / max) * sparks.len() as f64).floor() as usize;
+            let idx = idx.min(sparks.len() - 1);
+            sparks[idx].to_string()
+        };
+        let styled = match today_local {
+            Some(t) if i < t => cyan(&glyph, theme),
+            Some(t) if i == t => bold(&yellow(&glyph, theme), theme),
+            Some(_) => dim(&glyph, theme),
+            None => cyan(&glyph, theme),
+        };
+        out.push_str(&styled);
+    }
+    (out, take)
 }
 
 /// Append a sub-divider + sparkline row, but only if the series has at
@@ -1013,6 +1167,16 @@ fn build_kanban_column(
         width,
         theme,
     );
+
+    if let Some(t) = k.trend.as_ref() {
+        push_spark_section(
+            &mut rows,
+            &format!("WIP / day ({}d)", t.wip_per_day.len()),
+            &t.wip_per_day,
+            width,
+            theme,
+        );
+    }
 
     rows
 }
@@ -1305,6 +1469,9 @@ fn render_plain_sprint(s: &SprintStats, stats: StatsMode) {
             );
         }
     }
+    if let Some(b) = s.burndown.as_ref() {
+        render_plain_burndown(b);
+    }
     println!();
     println!("  Avg Cycle Times (completed tickets):");
     plain_cycle("Created → Done", s.avg_resolve_hours);
@@ -1331,6 +1498,28 @@ fn render_plain_kanban(k: &KanbanStats, stats: StatsMode) {
     if let Some(tpd) = k.throughput_per_day {
         println!("    {:.2} issues/day", tpd);
     }
+    if let Some(t) = k.trend.as_ref() {
+        if !t.wip_per_day.is_empty() {
+            let nums: Vec<String> = t.wip_per_day.iter().map(|v| v.to_string()).collect();
+            let first = t.wip_per_day.first().copied().unwrap_or(0);
+            let last = t.wip_per_day.last().copied().unwrap_or(0);
+            let arrow = if last > first {
+                "↑"
+            } else if last < first {
+                "↓"
+            } else {
+                "→"
+            };
+            println!();
+            println!(
+                "  WIP/day:  {}  ({} {} {})",
+                nums.join(" "),
+                first,
+                arrow,
+                last
+            );
+        }
+    }
     println!();
     println!("  Avg Cycle Times (completed tickets):");
     plain_cycle("Created → Done", k.avg_resolve_hours);
@@ -1338,6 +1527,38 @@ fn render_plain_kanban(k: &KanbanStats, stats: StatsMode) {
     plain_cycle("In Progress", k.avg_in_progress_hours);
     plain_cycle("In Review", k.avg_in_review_hours);
     plain_cycle("QA", k.avg_qa_hours);
+}
+
+/// P3 plain-text burndown: a single-line series of remaining points
+/// with `|` marking today, followed by a scope-change summary line when
+/// any exist. Numbers are rounded to integers for readability.
+fn render_plain_burndown(b: &Burndown) {
+    if b.series.len() < 2 {
+        return;
+    }
+    let fmt_num = |v: f64| {
+        if (v - v.round()).abs() < 0.05 {
+            format!("{}", v.round() as i64)
+        } else {
+            format!("{:.1}", v)
+        }
+    };
+    let actual: Vec<String> = b.series.iter().copied().map(fmt_num).collect();
+    let projected: Vec<String> = b.projection.iter().copied().map(fmt_num).collect();
+    println!();
+    if projected.is_empty() {
+        println!("  Burndown: {}", actual.join(" "));
+    } else {
+        println!("  Burndown: {} | {}", actual.join(" "), projected.join(" "));
+    }
+    if !b.scope_changes.is_empty() {
+        let parts: Vec<String> = b
+            .scope_changes
+            .iter()
+            .map(|sc| format!("{:+.0} on D{}", sc.delta_pts, sc.day))
+            .collect();
+        println!("  Scope:    {}", parts.join(", "));
+    }
 }
 
 fn plain_cycle(label: &str, hours: Option<f64>) {
@@ -1673,6 +1894,7 @@ mod smoke {
             avg_todo_to_done_hours: Some(30.0),
             points_per_day: Some(1.6),
             done_per_day: vec![0, 1, 0, 2, 1, 3, 1, 2, 0, 1, 2, 1, 3, 2],
+            burndown: None,
         };
 
         StandupData {

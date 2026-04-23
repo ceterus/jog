@@ -1,12 +1,14 @@
 use anyhow::Result;
-use chrono::Local;
+use chrono::{DateTime, Duration, FixedOffset, Local};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::client::post_json;
 use crate::config::{project_jql_clause, AppConfig, Credentials};
-use crate::models::{Flow, KanbanStats, SprintStats};
+use crate::models::{
+    Burndown, Flow, KanbanStats, KanbanTrend, ScopeChange, ScopeChangeKind, SprintStats,
+};
 
 /// Resolved flow mode for this run. Determined from config + availability of
 /// open/closed sprints.
@@ -66,6 +68,414 @@ fn bucket_done_per_day(issues: &[Value], days: usize) -> Vec<u32> {
             buckets[idx] += 1;
         }
     }
+    buckets
+}
+
+/// True if `csv` (Jira's comma-separated list of sprint ids in a
+/// changelog `from`/`to`) contains `id`. Tolerates whitespace around
+/// commas and skips empty entries.
+fn sprint_id_in_csv(csv: &str, id: &str) -> bool {
+    csv.split(',').any(|x| x.trim() == id)
+}
+
+/// Extract a sprint id as a string from a sprint JSON blob. Jira returns
+/// the id as a number; we normalize to a string for comparison with
+/// changelog values.
+fn sprint_id_of(sprint: &Value) -> Option<String> {
+    sprint.get("id").map(|v| match v {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    })
+}
+
+/// Internal per-issue state during burndown replay.
+#[derive(Debug, Clone, Copy)]
+struct BurnState {
+    in_sprint: bool,
+    points: f64,
+    is_done: bool,
+}
+
+impl BurnState {
+    fn remaining(&self) -> f64 {
+        if self.in_sprint && !self.is_done {
+            self.points
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Per-issue changelog event affecting remaining-points contribution.
+enum BurnEvent {
+    Sprint { from_has: bool, to_has: bool },
+    Points { from: f64, to: f64 },
+    Status { from_done: bool, to_done: bool },
+}
+
+/// Reconstruct a burndown by replaying per-issue changelogs against the
+/// given sprint window. Scope changes land on the day the transition
+/// occurred (1-indexed). See `Burndown` for the return shape.
+#[allow(clippy::too_many_arguments)]
+fn compute_burndown(
+    issues: &[Value],
+    sprint_id: &str,
+    sprint_start: DateTime<FixedOffset>,
+    sprint_end: DateTime<FixedOffset>,
+    sp_field: &str,
+    sprint_field: &str,
+    done_statuses: &[String],
+    points_per_day: Option<f64>,
+) -> Option<Burndown> {
+    let now = Local::now().fixed_offset();
+    // Cap "today" at sprint end so a closed sprint doesn't show days
+    // past the finish line as elapsed.
+    let effective_now = if now > sprint_end { sprint_end } else { now };
+    let days_elapsed = (effective_now - sprint_start).num_days().max(0) as usize;
+    if days_elapsed == 0 {
+        return None;
+    }
+    let total_days = (sprint_end - sprint_start).num_days().max(1) as usize;
+    let days_left = total_days.saturating_sub(days_elapsed);
+
+    let is_done_name =
+        |s: &str| !s.is_empty() && done_statuses.iter().any(|d| d.eq_ignore_ascii_case(s));
+
+    // Treat changes landing in the first 24h after sprint start as part
+    // of initial scope rather than mid-sprint adds. Teams routinely
+    // finish dragging tickets into the sprint immediately after clicking
+    // "Start"; those edits would otherwise show up as a flurry of D1
+    // scope adds. The window deliberately trails into D2 so e.g. a
+    // sprint started late afternoon still captures next-morning
+    // planning tweaks.
+    let planning_end = sprint_start + Duration::hours(24);
+
+    let mut series = vec![0.0_f64; days_elapsed + 1];
+    let mut scope_changes: Vec<ScopeChange> = Vec::new();
+
+    for issue in issues {
+        let fields = issue.get("fields").cloned().unwrap_or(Value::Null);
+
+        let cur_pts = fields.get(sp_field).and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let cur_in_sprint = fields
+            .get(sprint_field)
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .any(|sp| sprint_id_of(sp).as_deref() == Some(sprint_id))
+            })
+            .unwrap_or(false);
+        let cur_is_done = fields
+            .get("status")
+            .and_then(|s| s.get("statusCategory"))
+            .and_then(|c| c.get("key"))
+            .and_then(|k| k.as_str())
+            == Some("done");
+
+        let mut events: Vec<(DateTime<FixedOffset>, BurnEvent)> = Vec::new();
+        if let Some(histories) = issue
+            .get("changelog")
+            .and_then(|c| c.get("histories"))
+            .and_then(|h| h.as_array())
+        {
+            for h in histories {
+                let ts = match h
+                    .get("created")
+                    .and_then(|x| x.as_str())
+                    .and_then(parse_datetime)
+                {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let items = match h.get("items").and_then(|x| x.as_array()) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                for item in items {
+                    let fid = item.get("fieldId").and_then(|x| x.as_str()).unwrap_or("");
+                    let fname = item.get("field").and_then(|x| x.as_str()).unwrap_or("");
+                    if fid == sprint_field || fname.eq_ignore_ascii_case("Sprint") {
+                        let from = item.get("from").and_then(|x| x.as_str()).unwrap_or("");
+                        let to = item.get("to").and_then(|x| x.as_str()).unwrap_or("");
+                        let from_has = sprint_id_in_csv(from, sprint_id);
+                        let to_has = sprint_id_in_csv(to, sprint_id);
+                        if from_has != to_has {
+                            events.push((ts, BurnEvent::Sprint { from_has, to_has }));
+                        }
+                    } else if fid == sp_field {
+                        let from = item
+                            .get("fromString")
+                            .and_then(|x| x.as_str())
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                        let to = item
+                            .get("toString")
+                            .and_then(|x| x.as_str())
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                        if (from - to).abs() > f64::EPSILON {
+                            events.push((ts, BurnEvent::Points { from, to }));
+                        }
+                    } else if fname == "status" {
+                        let from = item
+                            .get("fromString")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let to = item.get("toString").and_then(|x| x.as_str()).unwrap_or("");
+                        let from_done = is_done_name(from);
+                        let to_done = is_done_name(to);
+                        if from_done != to_done {
+                            events.push((ts, BurnEvent::Status { from_done, to_done }));
+                        }
+                    }
+                }
+            }
+        }
+        events.sort_by_key(|(ts, _)| *ts);
+
+        // Start from current state, rewind events that fired after the
+        // planning window to derive state at planning-end. Everything
+        // inside the 24h planning window counts as initial scope.
+        let mut state = BurnState {
+            in_sprint: cur_in_sprint,
+            points: cur_pts,
+            is_done: cur_is_done,
+        };
+        for (ts, ev) in events.iter().rev() {
+            if *ts <= planning_end {
+                break;
+            }
+            match ev {
+                BurnEvent::Sprint { from_has, .. } => state.in_sprint = *from_has,
+                BurnEvent::Points { from, .. } => state.points = *from,
+                BurnEvent::Status { from_done, .. } => state.is_done = *from_done,
+            }
+        }
+
+        series[0] += state.remaining();
+
+        // Walk forward day-by-day, applying events landing within each
+        // day. Attribute scope changes to the day they landed. Events
+        // inside the planning window are already baked into `state`.
+        let mut idx = 0usize;
+        while idx < events.len() && events[idx].0 <= planning_end {
+            idx += 1;
+        }
+        #[allow(clippy::needless_range_loop)]
+        for day in 1..=days_elapsed {
+            let day_end = sprint_start + Duration::days(day as i64);
+            let prev_in_sprint = state.in_sprint;
+            let prev_points = state.points;
+
+            while idx < events.len() && events[idx].0 <= day_end {
+                match events[idx].1 {
+                    BurnEvent::Sprint { to_has, .. } => state.in_sprint = to_has,
+                    BurnEvent::Points { to, .. } => state.points = to,
+                    BurnEvent::Status { to_done, .. } => state.is_done = to_done,
+                }
+                idx += 1;
+            }
+
+            series[day] += state.remaining();
+
+            if !prev_in_sprint && state.in_sprint {
+                scope_changes.push(ScopeChange {
+                    day,
+                    delta_pts: state.points,
+                    kind: ScopeChangeKind::Added,
+                });
+            } else if prev_in_sprint && !state.in_sprint {
+                scope_changes.push(ScopeChange {
+                    day,
+                    delta_pts: -prev_points,
+                    kind: ScopeChangeKind::Removed,
+                });
+            } else if prev_in_sprint && state.in_sprint && (state.points - prev_points).abs() > 0.01
+            {
+                scope_changes.push(ScopeChange {
+                    day,
+                    delta_pts: state.points - prev_points,
+                    kind: ScopeChangeKind::Repointed,
+                });
+            }
+        }
+    }
+
+    let mut projection = Vec::with_capacity(days_left);
+    if let (Some(ppd), Some(&last)) = (points_per_day, series.last()) {
+        let mut r = last;
+        for _ in 0..days_left {
+            r = (r - ppd).max(0.0);
+            projection.push(r);
+        }
+    }
+
+    Some(Burndown {
+        series,
+        projection,
+        scope_changes,
+    })
+}
+
+/// Reconstruct per-day WIP count (issues the user had open, assigned to
+/// them, not yet done) across a trailing window. Replays status and
+/// assignee changelogs on the union of currently-open and
+/// resolved-in-window issues.
+fn reconstruct_wip_per_day(
+    open_issues: &[Value],
+    resolved_issues: &[Value],
+    window_days: i64,
+    done_statuses: &[String],
+    my_account_id: Option<&str>,
+) -> Vec<u32> {
+    let days = window_days.max(1) as usize;
+    let mut buckets = vec![0u32; days];
+    let now = Local::now().fixed_offset();
+    // Bucket 0 = (window_days - 1) days ago, last bucket = today.
+    let day_ends: Vec<DateTime<FixedOffset>> = (0..days)
+        .map(|i| now - Duration::days((days - 1 - i) as i64))
+        .collect();
+
+    let is_done_name =
+        |s: &str| !s.is_empty() && done_statuses.iter().any(|d| d.eq_ignore_ascii_case(s));
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let all = open_issues.iter().chain(resolved_issues.iter());
+
+    for issue in all {
+        let key = issue
+            .get("key")
+            .and_then(|k| k.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !key.is_empty() && !seen.insert(key) {
+            continue;
+        }
+
+        let fields = issue.get("fields").cloned().unwrap_or(Value::Null);
+        let cur_is_done = fields
+            .get("status")
+            .and_then(|s| s.get("statusCategory"))
+            .and_then(|c| c.get("key"))
+            .and_then(|k| k.as_str())
+            == Some("done");
+        let cur_assignee_id = fields
+            .get("assignee")
+            .and_then(|a| a.get("accountId"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let cur_mine = match my_account_id {
+            Some(id) => cur_assignee_id == id,
+            // No account id available — assume the issue was always
+            // "mine" (the JQL already restricts the input set).
+            None => true,
+        };
+
+        // Collect status + assignee transitions with both sides.
+        #[derive(Clone, Copy)]
+        struct Trans {
+            ts: DateTime<FixedOffset>,
+            from_done: Option<bool>,
+            to_done: Option<bool>,
+            from_mine: Option<bool>,
+            to_mine: Option<bool>,
+        }
+        let mut events: Vec<Trans> = Vec::new();
+        if let Some(histories) = issue
+            .get("changelog")
+            .and_then(|c| c.get("histories"))
+            .and_then(|h| h.as_array())
+        {
+            for h in histories {
+                let ts = match h
+                    .get("created")
+                    .and_then(|x| x.as_str())
+                    .and_then(parse_datetime)
+                {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let items = match h.get("items").and_then(|x| x.as_array()) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                let mut t = Trans {
+                    ts,
+                    from_done: None,
+                    to_done: None,
+                    from_mine: None,
+                    to_mine: None,
+                };
+                for item in items {
+                    let fname = item.get("field").and_then(|x| x.as_str()).unwrap_or("");
+                    if fname == "status" {
+                        let from = item
+                            .get("fromString")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let to = item.get("toString").and_then(|x| x.as_str()).unwrap_or("");
+                        t.from_done = Some(is_done_name(from));
+                        t.to_done = Some(is_done_name(to));
+                    } else if fname == "assignee" {
+                        let from = item.get("from").and_then(|x| x.as_str()).unwrap_or("");
+                        let to = item.get("to").and_then(|x| x.as_str()).unwrap_or("");
+                        if let Some(id) = my_account_id {
+                            t.from_mine = Some(from == id);
+                            t.to_mine = Some(to == id);
+                        }
+                        // Without an id we can't attribute; ignore
+                        // assignee events and rely on cur_mine = true.
+                        let _ = from;
+                        let _ = to;
+                    }
+                }
+                if t.to_done.is_some() || t.to_mine.is_some() {
+                    events.push(t);
+                }
+            }
+        }
+        events.sort_by_key(|e| e.ts);
+
+        // Rewind current state back to window start.
+        let mut is_done = cur_is_done;
+        let mut mine = cur_mine;
+        let window_start = now - Duration::days(days as i64);
+        for e in events.iter().rev() {
+            if e.ts <= window_start {
+                break;
+            }
+            if let Some(fd) = e.from_done {
+                is_done = fd;
+            }
+            if let Some(fm) = e.from_mine {
+                mine = fm;
+            }
+        }
+
+        // Walk forward across each day-end bucket.
+        let mut idx = 0usize;
+        while idx < events.len() && events[idx].ts <= window_start {
+            idx += 1;
+        }
+        for (i, &day_end) in day_ends.iter().enumerate() {
+            while idx < events.len() && events[idx].ts <= day_end {
+                let e = &events[idx];
+                if let Some(td) = e.to_done {
+                    is_done = td;
+                }
+                if let Some(tm) = e.to_mine {
+                    mine = tm;
+                }
+                idx += 1;
+            }
+            if mine && !is_done {
+                buckets[i] += 1;
+            }
+        }
+    }
+
     buckets
 }
 
@@ -281,6 +691,8 @@ async fn fetch_sprint_stats(
     let mut total_days: i64 = 0;
     let mut days_elapsed: i64 = 0;
     let mut state_for_output = sprint_state.to_string();
+    let mut sprint_id_str: Option<String> = None;
+    let mut sprint_window: Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> = None;
 
     let picked = pick_sprint(&issues, sprint_field, sprint_state);
     if let Some(sprint) = picked {
@@ -289,6 +701,7 @@ async fn fetch_sprint_stats(
             .and_then(|x| x.as_str())
             .unwrap_or("Unknown Sprint")
             .to_string();
+        sprint_id_str = sprint_id_of(&sprint);
         if let (Some(start), Some(end)) = (
             sprint.get("startDate").and_then(|x| x.as_str()),
             sprint.get("endDate").and_then(|x| x.as_str()),
@@ -298,6 +711,7 @@ async fn fetch_sprint_stats(
                 days_remaining = (e.with_timezone(&Local) - now).num_days();
                 total_days = (e - s).num_days();
                 days_elapsed = (now - s.with_timezone(&Local)).num_days().max(1);
+                sprint_window = Some((s, e));
                 // Only surface a closed sprint if it ended in the last 2 days.
                 if sprint_state == "closed" && days_remaining < -2 {
                     return Ok(None);
@@ -396,6 +810,26 @@ async fn fetch_sprint_stats(
     let spark_len = (days_elapsed.max(1) as usize).min(total_days.max(1) as usize);
     let done_per_day = bucket_done_per_day(&issues, spark_len);
 
+    let points_per_day = if days_elapsed > 0 {
+        Some(points_done / days_elapsed as f64)
+    } else {
+        None
+    };
+
+    let burndown = match (sprint_id_str.as_deref(), sprint_window) {
+        (Some(sid), Some((s, e))) => compute_burndown(
+            &issues,
+            sid,
+            s,
+            e,
+            sp_field,
+            sprint_field,
+            &cfg.statuses.done,
+            points_per_day,
+        ),
+        _ => None,
+    };
+
     Ok(Some(SprintStats {
         name: sprint_name,
         state: state_for_output,
@@ -411,12 +845,9 @@ async fn fetch_sprint_stats(
         avg_in_review_hours: avg(&in_review_hours),
         avg_qa_hours: avg(&qa_hours),
         avg_todo_to_done_hours: avg(&todo_to_done_hours),
-        points_per_day: if days_elapsed > 0 {
-            Some(points_done / days_elapsed as f64)
-        } else {
-            None
-        },
+        points_per_day,
         done_per_day,
+        burndown,
     }))
 }
 
@@ -448,7 +879,8 @@ async fn fetch_kanban_stats(
     }
     let wip_body = serde_json::json!({
         "jql": wip_jql,
-        "fields": ["status"],
+        "fields": ["status", "assignee"],
+        "expand": "changelog",
         "maxResults": 200,
     });
     let wip_v = post_json(client, creds, "/rest/api/3/search/jql", &wip_body).await?;
@@ -482,7 +914,7 @@ async fn fetch_kanban_stats(
     }
     let thr_body = serde_json::json!({
         "jql": throughput_jql,
-        "fields": ["status", "created", "resolutiondate"],
+        "fields": ["status", "assignee", "created", "resolutiondate"],
         "expand": "changelog",
         "maxResults": 100,
     });
@@ -552,6 +984,19 @@ async fn fetch_kanban_stats(
 
     let done_per_day = bucket_done_per_day(&thr_issues, KANBAN_WINDOW_DAYS as usize);
 
+    let wip_per_day = reconstruct_wip_per_day(
+        &wip_issues,
+        &thr_issues,
+        KANBAN_WINDOW_DAYS,
+        &cfg.statuses.done,
+        None,
+    );
+    let trend = if wip_per_day.iter().any(|&c| c > 0) {
+        Some(KanbanTrend { wip_per_day })
+    } else {
+        None
+    };
+
     Ok(KanbanStats {
         window_days: KANBAN_WINDOW_DAYS,
         wip_by_status,
@@ -568,6 +1013,7 @@ async fn fetch_kanban_stats(
         avg_qa_hours: avg(&qa_hours),
         avg_todo_to_done_hours: avg(&todo_to_done_hours),
         done_per_day,
+        trend,
     })
 }
 
@@ -812,5 +1258,162 @@ mod tests {
     fn pick_sprint_handles_missing_sprint_field() {
         let issues = vec![json!({ "fields": {} })];
         assert!(pick_sprint(&issues, "sp", "active").is_none());
+    }
+
+    // ── compute_burndown ──────────────────────────────────────────────────
+
+    fn dt(s: &str) -> chrono::DateTime<chrono::FixedOffset> {
+        parse_datetime(s).unwrap()
+    }
+
+    fn issue_with_changelog(
+        sp_field: &str,
+        sprint_field: &str,
+        sprint_id: i64,
+        points: f64,
+        done: bool,
+        histories: Value,
+    ) -> Value {
+        json!({
+            "key": "TEST-1",
+            "fields": {
+                sp_field: points,
+                sprint_field: [{"id": sprint_id, "state": "active"}],
+                "status": {
+                    "statusCategory": { "key": if done { "done" } else { "indeterminate" } }
+                }
+            },
+            "changelog": { "histories": histories }
+        })
+    }
+
+    #[test]
+    fn burndown_basic_progression() {
+        // Sprint runs D1..D10. Issue worth 5 pts, present from start,
+        // resolved on D3. Expect remaining: [5, 5, 5, 0, 0, 0] at days
+        // 0..5 (today = D5).
+        let start = dt("2026-04-14T00:00:00+00:00");
+        let end = dt("2026-04-24T00:00:00+00:00");
+        // Mock "now" by capping days_elapsed via changelog alone: the
+        // function uses Local::now(), so instead set the sprint to end
+        // in the near past so days_elapsed = total_days.
+        let past_start = chrono::Local::now().fixed_offset() - chrono::Duration::days(10);
+        let past_end = past_start + chrono::Duration::days(10);
+        let resolved_at = past_start + chrono::Duration::days(3);
+
+        let histories = json!([
+            {
+                "created": resolved_at.to_rfc3339(),
+                "items": [
+                    {
+                        "field": "status",
+                        "fromString": "In Progress",
+                        "toString": "Done"
+                    }
+                ]
+            }
+        ]);
+        let issue = issue_with_changelog("sp", "spr", 42, 5.0, true, histories);
+        let done_statuses = vec!["Done".to_string()];
+        let b = compute_burndown(
+            &[issue],
+            "42",
+            past_start,
+            past_end,
+            "sp",
+            "spr",
+            &done_statuses,
+            Some(0.5),
+        )
+        .expect("burndown should compute");
+        // Day 0 starts with 5 pts, D3 drops to 0, stays 0 after.
+        assert_eq!(b.series[0], 5.0);
+        assert_eq!(b.series[2], 5.0);
+        assert_eq!(b.series[3], 0.0);
+        let _ = start;
+        let _ = end;
+    }
+
+    #[test]
+    fn burndown_detects_mid_sprint_scope_add() {
+        // Issue added to the sprint on D4 worth 3 pts, never resolved.
+        let past_start = chrono::Local::now().fixed_offset() - chrono::Duration::days(10);
+        let past_end = past_start + chrono::Duration::days(10);
+        let added_at = past_start + chrono::Duration::days(4);
+
+        let histories = json!([
+            {
+                "created": added_at.to_rfc3339(),
+                "items": [
+                    { "field": "Sprint", "fieldId": "spr", "from": "", "to": "42" }
+                ]
+            }
+        ]);
+        let issue = issue_with_changelog("sp", "spr", 42, 3.0, false, histories);
+        let done_statuses = vec!["Done".to_string()];
+        let b = compute_burndown(
+            &[issue],
+            "42",
+            past_start,
+            past_end,
+            "sp",
+            "spr",
+            &done_statuses,
+            Some(0.0),
+        )
+        .expect("burndown should compute");
+        assert_eq!(b.series[0], 0.0, "not in sprint at start");
+        assert_eq!(b.series[4], 3.0, "added on D4");
+        assert_eq!(b.scope_changes.len(), 1);
+        assert_eq!(b.scope_changes[0].day, 4);
+        assert_eq!(b.scope_changes[0].kind, ScopeChangeKind::Added);
+        assert!((b.scope_changes[0].delta_pts - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn burndown_treats_first_24h_adds_as_initial_scope() {
+        // Issue added 2 hours after sprint start — planning-window tweak.
+        // Should count as initial scope, NOT as a D1 scope change.
+        let past_start = chrono::Local::now().fixed_offset() - chrono::Duration::days(10);
+        let past_end = past_start + chrono::Duration::days(10);
+        let added_at = past_start + chrono::Duration::hours(2);
+
+        let histories = json!([
+            {
+                "created": added_at.to_rfc3339(),
+                "items": [
+                    { "field": "Sprint", "fieldId": "spr", "from": "", "to": "42" }
+                ]
+            }
+        ]);
+        let issue = issue_with_changelog("sp", "spr", 42, 3.0, false, histories);
+        let done_statuses = vec!["Done".to_string()];
+        let b = compute_burndown(
+            &[issue],
+            "42",
+            past_start,
+            past_end,
+            "sp",
+            "spr",
+            &done_statuses,
+            Some(0.0),
+        )
+        .expect("burndown should compute");
+        assert_eq!(
+            b.series[0], 3.0,
+            "initial scope should include planning-window add"
+        );
+        assert!(
+            b.scope_changes.is_empty(),
+            "planning-window adds are not mid-sprint changes: {:?}",
+            b.scope_changes
+        );
+    }
+
+    #[test]
+    fn sprint_id_in_csv_handles_whitespace() {
+        assert!(sprint_id_in_csv("1, 42, 100", "42"));
+        assert!(!sprint_id_in_csv("1, 100", "42"));
+        assert!(!sprint_id_in_csv("", "42"));
     }
 }

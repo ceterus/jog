@@ -1,6 +1,8 @@
 use crate::comments::clean_comment;
 use crate::config::StatsMode;
-use crate::models::{BitbucketActivity, Flow, KanbanStats, PullRequest, SprintStats, StandupData};
+use crate::models::{
+    BitbucketActivity, Burndown, Flow, KanbanStats, PullRequest, SprintStats, StandupData,
+};
 use crate::output::text::fmt_duration;
 
 pub fn render(data: &StandupData, stats: StatsMode) {
@@ -174,6 +176,9 @@ fn render_sprint(s: &SprintStats, stats: StatsMode) {
             );
         }
     }
+    if let Some(b) = s.burndown.as_ref() {
+        render_md_burndown(b);
+    }
     println!();
     println!("**Avg Cycle Times:**");
     println!();
@@ -184,6 +189,38 @@ fn render_sprint(s: &SprintStats, stats: StatsMode) {
     print_row("In Progress", s.avg_in_progress_hours);
     print_row("In Review", s.avg_in_review_hours);
     print_row("QA", s.avg_qa_hours);
+}
+
+fn render_md_burndown(b: &Burndown) {
+    if b.series.len() < 2 {
+        return;
+    }
+    let fmt_num = |v: f64| {
+        if (v - v.round()).abs() < 0.05 {
+            format!("{}", v.round() as i64)
+        } else {
+            format!("{:.1}", v)
+        }
+    };
+    let actual: Vec<String> = b.series.iter().copied().map(fmt_num).collect();
+    let projected: Vec<String> = b.projection.iter().copied().map(fmt_num).collect();
+    println!();
+    println!("**Burndown:**");
+    println!();
+    if projected.is_empty() {
+        println!("`{}`", actual.join(" "));
+    } else {
+        println!("`{} | {}`", actual.join(" "), projected.join(" "));
+    }
+    if !b.scope_changes.is_empty() {
+        let parts: Vec<String> = b
+            .scope_changes
+            .iter()
+            .map(|sc| format!("{:+.0} on D{}", sc.delta_pts, sc.day))
+            .collect();
+        println!();
+        println!("_Scope: {}_", parts.join(", "));
+    }
 }
 
 fn render_kanban(k: &KanbanStats, stats: StatsMode) {
@@ -208,6 +245,13 @@ fn render_kanban(k: &KanbanStats, stats: StatsMode) {
     if let Some(tpd) = k.throughput_per_day {
         println!();
         println!("{:.2} issues/day", tpd);
+    }
+    if let Some(t) = k.trend.as_ref() {
+        if !t.wip_per_day.is_empty() {
+            let nums: Vec<String> = t.wip_per_day.iter().map(|v| v.to_string()).collect();
+            println!();
+            println!("**WIP/day:** `{}`", nums.join(" "));
+        }
     }
     println!();
     println!("**Avg Cycle Times:**");

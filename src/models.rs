@@ -58,6 +58,53 @@ pub struct SprintStats {
     /// `days_elapsed` (or `1` if the sprint just started). Powers the
     /// sparkline row in the stats card.
     pub done_per_day: Vec<u32>,
+    /// Burndown reconstructed from issue changelogs. `None` if the sprint
+    /// has no start/end date or no issues have a usable changelog.
+    pub burndown: Option<Burndown>,
+}
+
+/// Reconstructed per-day remaining-points series for an active sprint,
+/// plus any mid-sprint scope changes. Built by replaying issue changelogs
+/// (Sprint field, story points field, status transitions).
+#[derive(Serialize, Clone, Debug)]
+pub struct Burndown {
+    /// Remaining points at the end of each elapsed day, oldest-first.
+    /// Index 0 = scope at sprint start (before day 1). Length =
+    /// `days_elapsed + 1`.
+    pub series: Vec<f64>,
+    /// Linear projection of remaining points for each future day at the
+    /// current observed velocity. Oldest-first, length = days-left.
+    /// Empty when the sprint is over or velocity is unknown.
+    pub projection: Vec<f64>,
+    /// Mid-sprint scope events in chronological order.
+    pub scope_changes: Vec<ScopeChange>,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeChangeKind {
+    Added,
+    Removed,
+    Repointed,
+}
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct ScopeChange {
+    /// 1-indexed day of sprint when the change landed (D1, D2, ...).
+    pub day: usize,
+    /// Signed points delta: + for added scope, - for removed.
+    pub delta_pts: f64,
+    pub kind: ScopeChangeKind,
+}
+
+/// Per-day trend extras for Kanban flow. Powers throughput + WIP
+/// sparklines in the stats card. All series are oldest-first and aligned
+/// to `window_days`.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct KanbanTrend {
+    /// Issues open (assigned to user, not done) at end of each day.
+    /// Length = `window_days`.
+    pub wip_per_day: Vec<u32>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -80,6 +127,9 @@ pub struct KanbanStats {
     /// Issues resolved per day across `window_days`, oldest-first.
     /// Powers the sparkline row in the stats card.
     pub done_per_day: Vec<u32>,
+    /// Per-day trend series (currently: WIP count). `None` when the
+    /// changelog data needed to reconstruct the series was unavailable.
+    pub trend: Option<KanbanTrend>,
 }
 
 /// Which flow model applies to this user's work — sprint/scrum or kanban.

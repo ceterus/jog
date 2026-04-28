@@ -947,7 +947,18 @@ fn sparkline_f64(
     // the trimmed slice. `None` if today has scrolled off the left.
     let today_local = today_in_full.and_then(|t| if t >= start { Some(t - start) } else { None });
 
+    // When the column has more cells than data points, stretch each
+    // point across multiple cells so the sparkline fills the pane.
+    // Remainder cells go to the oldest points so "today" stays a
+    // single-cell marker on the right edge.
+    let (base, extra) = if width > slice.len() {
+        (width / slice.len(), width % slice.len())
+    } else {
+        (1, 0)
+    };
+
     let mut out = String::new();
+    let mut used_cells = 0usize;
     for (i, &v) in slice.iter().enumerate() {
         let glyph = if v <= 0.0 || max <= 0.0 {
             " ".to_string()
@@ -956,15 +967,18 @@ fn sparkline_f64(
             let idx = idx.min(sparks.len() - 1);
             sparks[idx].to_string()
         };
+        let n = base + if i < extra { 1 } else { 0 };
+        let chunk = glyph.repeat(n);
         let styled = match today_local {
-            Some(t) if i < t => cyan(&glyph, theme),
-            Some(t) if i == t => bold(&yellow(&glyph, theme), theme),
-            Some(_) => dim(&glyph, theme),
-            None => cyan(&glyph, theme),
+            Some(t) if i < t => cyan(&chunk, theme),
+            Some(t) if i == t => bold(&yellow(&chunk, theme), theme),
+            Some(_) => dim(&chunk, theme),
+            None => cyan(&chunk, theme),
         };
         out.push_str(&styled);
+        used_cells += n;
     }
-    (out, take)
+    (out, used_cells)
 }
 
 /// Append a sub-divider + sparkline row, but only if the series has at
@@ -998,14 +1012,28 @@ fn sparkline_row(series: &[u32], width: usize, theme: &Theme) -> String {
     let start = series.len() - take;
     let slice = &series[start..];
     let max = *slice.iter().max().unwrap_or(&0);
+    // Stretch each data point across multiple cells when the column has
+    // headroom, so the sparkline fills the pane instead of rendering a
+    // short stub on the right edge. Remainder cells go to the oldest
+    // points; today stays right-anchored.
+    let (base, extra) = if width > slice.len() {
+        (width / slice.len(), width % slice.len())
+    } else {
+        (1, 0)
+    };
     let mut out = String::new();
-    for &v in slice {
+    for (i, &v) in slice.iter().enumerate() {
+        let n = base + if i < extra { 1 } else { 0 };
         if v == 0 || max == 0 {
-            out.push(' ');
+            for _ in 0..n {
+                out.push(' ');
+            }
         } else {
             let idx = ((v as usize * sparks.len()).saturating_sub(1)) / (max as usize);
             let idx = idx.min(sparks.len() - 1);
-            out.push_str(sparks[idx]);
+            for _ in 0..n {
+                out.push_str(sparks[idx]);
+            }
         }
     }
     // Left-pad so the sparkline hugs the right edge like other ledger rows.
